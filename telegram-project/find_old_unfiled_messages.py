@@ -174,26 +174,35 @@ def main() -> None:
 
         scanned_unfiled = 0
         for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
-            if dialog_folder_names(dialog, filter_rules):
+            folder_names = dialog_folder_names(dialog, filter_rules)
+            if folder_names:
                 continue
 
             scanned_unfiled += 1
             if args.max_chats and scanned_unfiled > args.max_chats:
                 break
 
-            shown = 0
+            matching_messages = []
             for message in client.iter_messages(dialog.entity, from_user=my_user_id):
                 if message.date is None:
                     continue
                 if message.date > cutoff:
                     continue
 
-                print(
-                    f"{dialog.name} | {message.date.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} | {normalize_message_text(message)}"
-                )
-                shown += 1
-                if args.limit_per_chat and shown >= args.limit_per_chat:
+                matching_messages.append(message)
+                if args.limit_per_chat and len(matching_messages) >= args.limit_per_chat:
                     break
+
+            if not matching_messages:
+                continue
+
+            folder_label = ", ".join(folder_names) if folder_names else "<none>"
+            print(f"{dialog.name} | folders: {folder_label}")
+            for message in matching_messages:
+                print(
+                    f"  {message.date.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} | {normalize_message_text(message)}"
+                )
+            print()
 
 
 if __name__ == "__main__":
