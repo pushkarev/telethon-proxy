@@ -18,6 +18,10 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    ```bash
    python app.py
    ```
+5. List chats and their folders:
+   ```bash
+   python list_chat_folders.py
+   ```
 
 ## Getting Telegram API credentials
 
