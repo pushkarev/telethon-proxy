@@ -124,8 +124,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit-per-chat",
         type=int,
-        default=20,
-        help="Maximum matching messages to print per chat. Default: 20",
+        default=0,
+        help="Maximum matching messages per chat. 0 means no limit. Default: 0",
     )
     parser.add_argument(
         "--max-chats",
@@ -196,9 +196,9 @@ def main() -> None:
             if folder_names:
                 continue
 
-            scanned_unfiled += 1
-            if args.max_chats and scanned_unfiled > args.max_chats:
+            if args.max_chats and scanned_unfiled >= args.max_chats:
                 break
+            scanned_unfiled += 1
 
             matching_messages = []
             for message in client.iter_messages(dialog.entity, from_user=my_user_id):

@@ -30,7 +30,12 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    Optional flags:
    ```bash
    python find_old_unfiled_messages.py --days 45 --limit-per-chat 10
+   python find_old_unfiled_messages.py --delete
    ```
+   Notes:
+   - dry-run is the default
+   - `--delete` revoke-deletes matching messages for everyone where Telegram allows it
+   - `--limit-per-chat 0` means no limit and is the default
    Actually delete the matching messages for everyone:
    ```bash
    python find_old_unfiled_messages.py --delete
