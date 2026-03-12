@@ -138,6 +138,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Actually delete the matching messages for everyone (revoke=True). Default is dry-run.",
     )
+    parser.add_argument(
+        "--include-direct",
+        action="store_true",
+        help="Include 1:1/direct chats. By default only multi-person chats are considered.",
+    )
     return parser.parse_args()
 
 
@@ -189,6 +194,7 @@ def main() -> None:
 
         scanned_unfiled = 0
         skipped_foldered_chats = 0
+        skipped_direct_chats = 0
         total_messages = 0
         total_deleted = 0
 
@@ -198,6 +204,11 @@ def main() -> None:
                 skipped_foldered_chats += 1
                 folder_label = ", ".join(folder_names)
                 print(f"{dialog.name} | folders: {folder_label} | skipped: chat belongs to custom folder(s)")
+                continue
+
+            if dialog.is_user and not args.include_direct:
+                skipped_direct_chats += 1
+                print(f"{dialog.name} | folders: <none> | skipped: direct 1:1 chat (use --include-direct to include)")
                 continue
 
             if args.max_chats and scanned_unfiled >= args.max_chats:
@@ -237,7 +248,7 @@ def main() -> None:
             print()
 
         print(
-            f"Summary: scanned_unfiled_chats={scanned_unfiled}, skipped_foldered_chats={skipped_foldered_chats}, matched_messages={total_messages}, deleted_messages={total_deleted}"
+            f"Summary: scanned_unfiled_chats={scanned_unfiled}, skipped_foldered_chats={skipped_foldered_chats}, skipped_direct_chats={skipped_direct_chats}, matched_messages={total_messages}, deleted_messages={total_deleted}"
         )
 
 

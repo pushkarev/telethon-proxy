@@ -31,10 +31,12 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    ```bash
    python find_old_unfiled_messages.py --days 45 --limit-per-chat 10
    python find_old_unfiled_messages.py --delete
+   python find_old_unfiled_messages.py --include-direct --delete
    ```
    Notes:
    - dry-run is the default
    - chats that belong to custom folders are printed explicitly as skipped
+   - direct 1:1 chats are skipped by default; use `--include-direct` to include them
    - `--delete` revoke-deletes matching messages for everyone where Telegram allows it
    - `--limit-per-chat 0` means no limit and is the default
 
