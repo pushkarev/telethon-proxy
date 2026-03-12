@@ -160,6 +160,21 @@ def normalize_message_text(message) -> str:
     return "<empty>"
 
 
+def contains_image(message) -> bool:
+    if getattr(message, "photo", None):
+        return True
+    media = getattr(message, "media", None)
+    if isinstance(media, types.MessageMediaPhoto):
+        return True
+    if isinstance(media, types.MessageMediaDocument):
+        document = getattr(media, "document", None)
+        if document:
+            for attribute in getattr(document, "attributes", []):
+                if isinstance(attribute, types.DocumentAttributeImageSize):
+                    return True
+    return False
+
+
 def chunked(values: list[int], size: int):
     for start in range(0, len(values), size):
         yield values[start : start + size]
@@ -196,6 +211,7 @@ def main() -> None:
         skipped_foldered_chats = 0
         skipped_direct_chats = 0
         total_messages = 0
+        skipped_image_messages = 0
         total_deleted = 0
 
         for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
@@ -216,22 +232,29 @@ def main() -> None:
             scanned_unfiled += 1
 
             matching_messages = []
+            skipped_images_in_chat = 0
             for message in client.iter_messages(dialog.entity, from_user=my_user_id):
                 if message.date is None:
                     continue
                 if message.date > cutoff:
+                    continue
+                if contains_image(message):
+                    skipped_images_in_chat += 1
+                    skipped_image_messages += 1
                     continue
 
                 matching_messages.append(message)
                 if args.limit_per_chat and len(matching_messages) >= args.limit_per_chat:
                     break
 
-            if not matching_messages:
+            if not matching_messages and not skipped_images_in_chat:
                 continue
 
             total_messages += len(matching_messages)
             folder_label = ", ".join(folder_names) if folder_names else "<none>"
-            print(f"{dialog.name} | folders: {folder_label} | matches: {len(matching_messages)}")
+            print(
+                f"{dialog.name} | folders: {folder_label} | matches: {len(matching_messages)} | skipped_images: {skipped_images_in_chat}"
+            )
             for message in matching_messages:
                 print(
                     f"  {message.date.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} | #{message.id} | {normalize_message_text(message)}"
@@ -248,7 +271,7 @@ def main() -> None:
             print()
 
         print(
-            f"Summary: scanned_unfiled_chats={scanned_unfiled}, skipped_foldered_chats={skipped_foldered_chats}, skipped_direct_chats={skipped_direct_chats}, matched_messages={total_messages}, deleted_messages={total_deleted}"
+            f"Summary: scanned_unfiled_chats={scanned_unfiled}, skipped_foldered_chats={skipped_foldered_chats}, skipped_direct_chats={skipped_direct_chats}, matched_messages={total_messages}, skipped_image_messages={skipped_image_messages}, deleted_messages={total_deleted}"
         )
 
 
