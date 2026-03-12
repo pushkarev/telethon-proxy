@@ -108,7 +108,7 @@ def dialog_folder_names(dialog, filter_rules) -> list[str]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="List your sent messages from chats that are not in any Telegram custom folder."
+        description="Dry-run by default: find your old messages in chats not in any Telegram custom folder."
     )
     parser.add_argument(
         "--months",
@@ -133,6 +133,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional cap on number of unfiled chats to scan. 0 means all.",
     )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Actually delete the matching messages for everyone (revoke=True). Default is dry-run.",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +153,11 @@ def normalize_message_text(message) -> str:
     if message.media:
         return "<media without text>"
     return "<empty>"
+
+
+def chunked(values: list[int], size: int):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 def main() -> None:
@@ -172,7 +182,15 @@ def main() -> None:
         filters_result = client(functions.messages.GetDialogFiltersRequest())
         filter_rules = build_filter_rules(filters_result)
 
+        mode = "DELETE" if args.delete else "DRY RUN"
+        print(f"Mode: {mode}")
+        print(f"Cutoff: {cutoff.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print()
+
         scanned_unfiled = 0
+        total_messages = 0
+        total_deleted = 0
+
         for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
             folder_names = dialog_folder_names(dialog, filter_rules)
             if folder_names:
@@ -196,13 +214,27 @@ def main() -> None:
             if not matching_messages:
                 continue
 
+            total_messages += len(matching_messages)
             folder_label = ", ".join(folder_names) if folder_names else "<none>"
-            print(f"{dialog.name} | folders: {folder_label}")
+            print(f"{dialog.name} | folders: {folder_label} | matches: {len(matching_messages)}")
             for message in matching_messages:
                 print(
-                    f"  {message.date.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} | {normalize_message_text(message)}"
+                    f"  {message.date.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')} | #{message.id} | {normalize_message_text(message)}"
                 )
+
+            if args.delete:
+                message_ids = [message.id for message in matching_messages]
+                for batch in chunked(message_ids, 100):
+                    client.delete_messages(dialog.entity, batch, revoke=True)
+                    total_deleted += len(batch)
+                print(f"  deleted: {len(message_ids)}")
+            else:
+                print("  dry-run: no messages deleted")
             print()
+
+        print(
+            f"Summary: scanned_unfiled_chats={scanned_unfiled}, matched_messages={total_messages}, deleted_messages={total_deleted}"
+        )
 
 
 if __name__ == "__main__":

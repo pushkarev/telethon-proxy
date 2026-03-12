@@ -26,10 +26,14 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    ```bash
    python find_old_unfiled_messages.py
    ```
-   Output is grouped by chat and prints the folder list before the messages.
+   This is a dry-run by default. Output is grouped by chat and prints the folder list before the messages.
    Optional flags:
    ```bash
    python find_old_unfiled_messages.py --days 45 --limit-per-chat 10
+   ```
+   Actually delete the matching messages for everyone:
+   ```bash
+   python find_old_unfiled_messages.py --delete
    ```
 
 ## Getting Telegram API credentials
