@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telethon import TelegramClient
+from telethon.sync import TelegramClient
 
 
 def require_env(name: str) -> str:
