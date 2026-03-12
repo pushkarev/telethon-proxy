@@ -188,12 +188,16 @@ def main() -> None:
         print()
 
         scanned_unfiled = 0
+        skipped_foldered_chats = 0
         total_messages = 0
         total_deleted = 0
 
         for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
             folder_names = dialog_folder_names(dialog, filter_rules)
             if folder_names:
+                skipped_foldered_chats += 1
+                folder_label = ", ".join(folder_names)
+                print(f"{dialog.name} | folders: {folder_label} | skipped: chat belongs to custom folder(s)")
                 continue
 
             if args.max_chats and scanned_unfiled >= args.max_chats:
@@ -233,7 +237,7 @@ def main() -> None:
             print()
 
         print(
-            f"Summary: scanned_unfiled_chats={scanned_unfiled}, matched_messages={total_messages}, deleted_messages={total_deleted}"
+            f"Summary: scanned_unfiled_chats={scanned_unfiled}, skipped_foldered_chats={skipped_foldered_chats}, matched_messages={total_messages}, deleted_messages={total_deleted}"
         )
 
 

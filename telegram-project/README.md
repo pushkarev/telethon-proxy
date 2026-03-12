@@ -34,12 +34,9 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    ```
    Notes:
    - dry-run is the default
+   - chats that belong to custom folders are printed explicitly as skipped
    - `--delete` revoke-deletes matching messages for everyone where Telegram allows it
    - `--limit-per-chat 0` means no limit and is the default
-   Actually delete the matching messages for everyone:
-   ```bash
-   python find_old_unfiled_messages.py --delete
-   ```
 
 ## Getting Telegram API credentials
 
