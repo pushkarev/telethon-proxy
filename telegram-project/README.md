@@ -41,9 +41,9 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    - `--delete` revoke-deletes matching messages for everyone where Telegram allows it
    - `--limit-per-chat 0` means no limit and is the default
 
-## Simple reply bot via Telegram Bot API
+## Telegram Bot API hook listener
 
-If you want a bot that replies `ok` to every incoming message for `@fewijhca3fih4bot`, use:
+If you want a bot that quietly invokes a local hook for every incoming message to `@fewijhca3fih4bot`, use:
 
 ```bash
 python reply_ok_bot.py
@@ -54,14 +54,15 @@ Add these values to `.env`:
 ```env
 TG_BOT_TOKEN=123456:your_bot_token_here
 TG_BOT_USERNAME=fewijhca3fih4bot
-TG_BOT_REPLY_TEXT=ok
+TG_BOT_HOOK_PATH=/home/ubuntu/incoming_hook.sh
 ```
 
 Notes:
 - This uses the Telegram **Bot API** with long polling (`getUpdates`).
 - The token must belong to the bot account you want to run.
 - By default it verifies that the authenticated bot username matches `fewijhca3fih4bot`.
-- It replies to text and non-text messages alike with the same `ok` message.
+- It does not reply in Telegram; it just runs the hook locally.
+- The raw Telegram update JSON is passed to the hook on stdin.
 
 ## Getting Telegram API credentials
 

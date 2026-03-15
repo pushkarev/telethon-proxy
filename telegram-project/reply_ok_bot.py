@@ -1,15 +1,18 @@
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 
 API_ROOT = "https://api.telegram.org"
+DEFAULT_HOOK_PATH = "/home/ubuntu/incoming_hook.sh"
 
 
 def require_env(name: str) -> str:
@@ -47,12 +50,27 @@ def telegram_request(token: str, method: str, params: dict[str, Any] | None = No
     return payload["result"]
 
 
+def run_hook(hook_path: str, update: dict[str, Any]) -> None:
+    hook = Path(hook_path)
+    if not hook.exists():
+        raise RuntimeError(f"Hook script does not exist: {hook}")
+
+    payload = json.dumps(update, ensure_ascii=False)
+    subprocess.run(
+        [str(hook)],
+        input=payload,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
 def main() -> None:
     load_dotenv()
 
     bot_token = require_env("TG_BOT_TOKEN")
     target_username = os.getenv("TG_BOT_USERNAME", "fewijhca3fih4bot")
-    reply_text = os.getenv("TG_BOT_REPLY_TEXT", "ok")
+    hook_path = os.getenv("TG_BOT_HOOK_PATH", DEFAULT_HOOK_PATH)
 
     me = telegram_request(bot_token, "getMe")
     username = me.get("username", "<unknown>")
@@ -65,7 +83,7 @@ def main() -> None:
         )
 
     offset = 0
-    print(f"Listening for messages for @{username}; replying with {reply_text!r}")
+    print(f"Listening for messages for @{username}; forwarding each one to {hook_path}")
 
     while True:
         try:
@@ -90,20 +108,7 @@ def main() -> None:
                 if chat_id is None:
                     continue
 
-                incoming_text = message.get("text") or "<non-text message>"
-                sender = message.get("from", {})
-                sender_label = sender.get("username") or sender.get("first_name") or "unknown"
-                print(f"Replying to chat {chat_id} from {sender_label}: {incoming_text}")
-
-                telegram_request(
-                    bot_token,
-                    "sendMessage",
-                    {
-                        "chat_id": chat_id,
-                        "text": reply_text,
-                        "reply_to_message_id": message.get("message_id"),
-                    },
-                )
+                run_hook(hook_path, update)
         except KeyboardInterrupt:
             print("Stopped.")
             return
