@@ -122,3 +122,32 @@ Supported harness methods today:
 - `send_message`
 - `mark_read`
 - `list_participants`
+
+
+## Proxy setup for a real Telegram account
+
+1. Copy the proxy env template:
+   ```bash
+   cp .env.proxy.example .env
+   ```
+2. Fill in:
+   - `TG_API_ID`
+   - `TG_API_HASH`
+   - `TG_PHONE`
+3. Check config:
+   ```bash
+   source .venv/bin/activate
+   python proxy_setup_check.py
+   ```
+4. Authorize the upstream account:
+   ```bash
+   python app.py
+   ```
+5. Verify the folder named `Cloud` exists and contains the chats you want:
+   ```bash
+   python list_chat_folders.py
+   ```
+6. Start the proxy harness:
+   ```bash
+   python proxy_main.py
+   ```
