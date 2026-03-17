@@ -1,0 +1,14 @@
+{
+  "name": "openclaw-browser-automation",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Practical Playwright starter for local browser tasks in this OpenClaw workspace.",
+  "type": "module",
+  "scripts": {
+    "browser:run": "node scripts/playwright-runner.mjs",
+    "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
+  },
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}
