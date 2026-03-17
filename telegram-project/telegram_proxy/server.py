@@ -61,8 +61,7 @@ class ProxyServer:
                     break
                 request = json.loads(line.decode("utf-8"))
                 response = await self.dispatcher.dispatch(session, request)
-                writer.write(json.dumps(response).encode("utf-8") + b"
-")
+                writer.write(json.dumps(response).encode("utf-8") + b"\n")
                 await writer.drain()
         finally:
             update_task.cancel()
@@ -79,6 +78,5 @@ class ProxyServer:
             writer.write(json.dumps({
                 "update": self.dispatcher._serialize_message(envelope.payload),
                 "state": self.dispatcher._serialize_state(state),
-            }).encode("utf-8") + b"
-")
+            }).encode("utf-8") + b"\n")
             await writer.drain()
