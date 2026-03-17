@@ -77,3 +77,25 @@ You will need:
 
 - Session data is stored in `sessions/sample_account.session`.
 - Never commit your real `.env` file or session files.
+
+## Telegram-compatible proxy scaffold
+
+A first v1 scaffold now lives under `telegram_proxy/`.
+
+What exists today:
+- Cloud-folder allowlist resolution
+- policy enforcement for history/send/read/participants
+- filtered update fanout from one upstream Telethon session
+- a simple local JSON control server (`proxy_main.py`) for integration testing
+- unit tests for the core filtering rules
+
+What does **not** exist yet:
+- MTProto wire compatibility for unmodified downstream Telethon clients
+
+Run the current scaffold:
+
+```bash
+source .venv/bin/activate
+python -m unittest tests.test_filtering -v
+python proxy_main.py
+```
