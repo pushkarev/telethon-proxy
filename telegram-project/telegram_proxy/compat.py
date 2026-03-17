@@ -5,6 +5,7 @@ from typing import Any
 
 from telethon import utils
 
+from .downstream_auth import DownstreamAuthService, DownstreamPrincipal
 from .session_state import VirtualUpdateState
 from .upstream import UpstreamAdapter
 
@@ -13,20 +14,51 @@ from .upstream import UpstreamAdapter
 class DownstreamSession:
     session_id: str
     state: VirtualUpdateState
+    principal: DownstreamPrincipal | None = None
 
 
 class CompatDispatcher:
-    def __init__(self, upstream: UpstreamAdapter) -> None:
+    def __init__(self, upstream: UpstreamAdapter, auth: DownstreamAuthService) -> None:
         self.upstream = upstream
+        self.auth = auth
 
     async def dispatch(self, session: DownstreamSession, request: dict[str, Any]) -> dict[str, Any]:
         method = request.get("method")
+        if method == "auth_send_code":
+            result = self.auth.send_code(
+                phone=request['phone'],
+                api_id=int(request['api_id']),
+                api_hash=request['api_hash'],
+            )
+            return {"ok": True, **result}
+        if method == "auth_sign_in":
+            session.principal = self.auth.sign_in(
+                phone=request['phone'],
+                code=request['code'],
+                phone_code_hash=request['phone_code_hash'],
+                password=request.get('password'),
+            )
+            return {
+                "ok": True,
+                "user": {
+                    "id": 1,
+                    "phone": session.principal.phone,
+                    "first_name": "Proxy",
+                    "last_name": "User",
+                    "username": None,
+                    "bot": False,
+                    "is_proxy_user": True,
+                },
+            }
         if method == "get_state":
+            self._require_auth(session)
             return {"ok": True, "state": self._serialize_state(session.state.snapshot())}
         if method == "refresh_policy":
+            self._require_auth(session)
             policy = await self.upstream.refresh_policy()
             return {"ok": True, "allowed_peers": sorted(policy.allowed_peers)}
         if method == "get_dialogs":
+            self._require_auth(session)
             dialogs = await self.upstream.get_dialogs(limit=int(request.get("limit", 100)))
             return {
                 "ok": True,
@@ -34,6 +66,7 @@ class CompatDispatcher:
                 "state": self._serialize_state(session.state.snapshot()),
             }
         if method == "get_history":
+            self._require_auth(session)
             result = await self.upstream.get_history(request["peer"], limit=int(request.get("limit", 100)))
             return {
                 "ok": True,
@@ -44,16 +77,23 @@ class CompatDispatcher:
                 "state": self._serialize_state(session.state.snapshot()),
             }
         if method == "send_message":
+            self._require_auth(session)
             message = await self.upstream.send_message(request["peer"], request["message"])
             state = session.state.advance_for_message()
             return {"ok": True, "message": self._serialize_message(message), "state": self._serialize_state(state)}
         if method == "mark_read":
+            self._require_auth(session)
             await self.upstream.mark_read(request["peer"])
             return {"ok": True, "state": self._serialize_state(session.state.snapshot())}
         if method == "list_participants":
+            self._require_auth(session)
             participants = await self.upstream.list_participants(request["peer"], limit=int(request.get("limit", 100)))
             return {"ok": True, "participants": [self._serialize_user(user) for user in participants]}
         return {"ok": False, "error": f"unsupported method: {method}"}
+
+    def _require_auth(self, session: DownstreamSession) -> None:
+        if session.principal is None:
+            raise PermissionError('downstream client is not authenticated')
 
     def _serialize_state(self, state) -> dict[str, Any]:
         return {

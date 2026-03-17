@@ -151,3 +151,21 @@ Supported harness methods today:
    ```bash
    python proxy_main.py
    ```
+
+
+### Downstream auth model
+
+Downstream clients should **not** use real Telegram login codes or real Telegram 2FA.
+Those are reserved for the single upstream account only.
+
+The proxy now models a separate downstream auth flow:
+- `auth_send_code` validates proxy-issued `api_id` / `api_hash`
+- the proxy returns a fake `phone_code_hash`
+- `auth_sign_in` accepts a proxy-configured fake login code
+- optional proxy-side password support is separate from Telegram 2FA
+
+Environment variables:
+- `TP_DOWNSTREAM_API_ID`
+- `TP_DOWNSTREAM_API_HASH`
+- `TP_DOWNSTREAM_LOGIN_CODE`
+- `TP_DOWNSTREAM_PASSWORD`

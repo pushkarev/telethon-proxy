@@ -11,6 +11,8 @@ class ProxyConfig:
     listen_port: int = 9000
     downstream_api_id: int = 900000
     downstream_api_hash: str = "dev-proxy-change-me"
+    downstream_login_code: str = "00000"
+    downstream_password: str = ""
     upstream_api_id: int = 0
     upstream_api_hash: str = ""
     upstream_phone: str = ""
@@ -32,6 +34,8 @@ class ProxyConfig:
             listen_port=int(os.getenv("TP_LISTEN_PORT", "9000")),
             downstream_api_id=int(os.getenv("TP_DOWNSTREAM_API_ID", "900000")),
             downstream_api_hash=os.getenv("TP_DOWNSTREAM_API_HASH", "dev-proxy-change-me"),
+            downstream_login_code=os.getenv("TP_DOWNSTREAM_LOGIN_CODE", "00000"),
+            downstream_password=os.getenv("TP_DOWNSTREAM_PASSWORD", ""),
             upstream_api_id=int(os.getenv("TG_API_ID", "0")),
             upstream_api_hash=os.getenv("TG_API_HASH", ""),
             upstream_phone=os.getenv("TG_PHONE", ""),

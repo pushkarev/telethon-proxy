@@ -8,6 +8,7 @@ from contextlib import suppress
 
 from .compat import CompatDispatcher, DownstreamSession
 from .config import ProxyConfig
+from .downstream_auth import DownstreamAuthService
 from .session_state import VirtualUpdateState
 from .upstream import UpstreamAdapter
 
@@ -25,7 +26,8 @@ class ProxyServer:
     def __init__(self, config: ProxyConfig) -> None:
         self.config = config
         self.upstream = UpstreamAdapter(config)
-        self.dispatcher = CompatDispatcher(self.upstream)
+        self.auth = DownstreamAuthService(config)
+        self.dispatcher = CompatDispatcher(self.upstream, self.auth)
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
