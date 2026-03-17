@@ -26,17 +26,17 @@ class CompatDispatcher:
         method = request.get("method")
         if method == "auth_send_code":
             result = self.auth.send_code(
-                phone=request['phone'],
-                api_id=int(request['api_id']),
-                api_hash=request['api_hash'],
+                phone=request["phone"],
+                api_id=int(request["api_id"]),
+                api_hash=request["api_hash"],
             )
             return {"ok": True, **result}
         if method == "auth_sign_in":
             session.principal = self.auth.sign_in(
-                phone=request['phone'],
-                code=request['code'],
-                phone_code_hash=request['phone_code_hash'],
-                password=request.get('password'),
+                phone=request["phone"],
+                code=request["code"],
+                phone_code_hash=request["phone_code_hash"],
+                password=request.get("password"),
             )
             return {
                 "ok": True,
@@ -50,15 +50,16 @@ class CompatDispatcher:
                     "is_proxy_user": True,
                 },
             }
+        self._require_auth(session)
         if method == "get_state":
-            self._require_auth(session)
             return {"ok": True, "state": self._serialize_state(session.state.snapshot())}
         if method == "refresh_policy":
-            self._require_auth(session)
             policy = await self.upstream.refresh_policy()
             return {"ok": True, "allowed_peers": sorted(policy.allowed_peers)}
+        if method == "resolve_peer":
+            peer = await self.upstream.resolve_peer(request["peer"])
+            return {"ok": True, "peer": self._serialize_peer(peer)}
         if method == "get_dialogs":
-            self._require_auth(session)
             dialogs = await self.upstream.get_dialogs(limit=int(request.get("limit", 100)))
             return {
                 "ok": True,
@@ -66,7 +67,6 @@ class CompatDispatcher:
                 "state": self._serialize_state(session.state.snapshot()),
             }
         if method == "get_history":
-            self._require_auth(session)
             result = await self.upstream.get_history(request["peer"], limit=int(request.get("limit", 100)))
             return {
                 "ok": True,
@@ -76,24 +76,33 @@ class CompatDispatcher:
                 "dropped_count": result.dropped_count,
                 "state": self._serialize_state(session.state.snapshot()),
             }
+        if method == "get_mentions":
+            result = await self.upstream.get_mentions(request["peer"], limit=int(request.get("limit", 100)))
+            return {
+                "ok": True,
+                "messages": [self._serialize_message(message) for message in result.messages],
+                "users": [self._serialize_user(user) for user in result.users],
+                "chats": [self._serialize_chat(chat) for chat in result.chats],
+                "dropped_count": result.dropped_count,
+            }
         if method == "send_message":
-            self._require_auth(session)
             message = await self.upstream.send_message(request["peer"], request["message"])
             state = session.state.advance_for_message()
             return {"ok": True, "message": self._serialize_message(message), "state": self._serialize_state(state)}
         if method == "mark_read":
-            self._require_auth(session)
             await self.upstream.mark_read(request["peer"])
             return {"ok": True, "state": self._serialize_state(session.state.snapshot())}
         if method == "list_participants":
-            self._require_auth(session)
             participants = await self.upstream.list_participants(request["peer"], limit=int(request.get("limit", 100)))
             return {"ok": True, "participants": [self._serialize_user(user) for user in participants]}
         return {"ok": False, "error": f"unsupported method: {method}"}
 
     def _require_auth(self, session: DownstreamSession) -> None:
         if session.principal is None:
-            raise PermissionError('downstream client is not authenticated')
+            raise PermissionError("downstream client is not authenticated")
+
+    def _serialize_peer(self, peer: Any) -> dict[str, Any]:
+        return {"peer_id": utils.get_peer_id(peer), "class": peer.__class__.__name__}
 
     def _serialize_state(self, state) -> dict[str, Any]:
         return {
@@ -123,6 +132,8 @@ class CompatDispatcher:
             "peer_id": peer_id,
             "sender_id": sender_id,
             "text": getattr(message, "message", None),
+            "mentioned": bool(getattr(message, "mentioned", False)),
+            "out": bool(getattr(message, "out", False)),
             "date": message.date.isoformat() if getattr(message, "date", None) else None,
         }
 

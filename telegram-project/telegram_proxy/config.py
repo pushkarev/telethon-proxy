@@ -20,6 +20,7 @@ class ProxyConfig:
     cloud_folder_name: str = "Cloud"
     allow_member_listing: bool = True
     update_buffer_size: int = 1000
+    incoming_hook_command: str = ""
 
     @property
     def upstream_session_path(self) -> Path:
@@ -43,4 +44,5 @@ class ProxyConfig:
             cloud_folder_name=os.getenv("TP_CLOUD_FOLDER", "Cloud"),
             allow_member_listing=os.getenv("TP_ALLOW_MEMBER_LISTING", "1") not in {"0", "false", "False"},
             update_buffer_size=int(os.getenv("TP_UPDATE_BUFFER_SIZE", "1000")),
+            incoming_hook_command=os.getenv("TP_INCOMING_HOOK", ""),
         )

@@ -18,18 +18,27 @@ class FakeUpstream:
         self.refreshed = True
         return SimpleNamespace(allowed_peers={1, 2, 3})
 
+    async def resolve_peer(self, peer):
+        if str(peer) == '42':
+            return types.PeerChat(42)
+        return types.PeerUser(99)
+
     async def get_dialogs(self, limit=100):
         entity = types.PeerChat(42)
         return [SimpleNamespace(entity=entity, name='Cloud Chat', unread_count=0, is_user=False, is_group=True, is_channel=False)]
 
     async def get_history(self, peer, limit=100):
-        msg = SimpleNamespace(id=7, peer_id=types.PeerChat(42), from_id=types.PeerUser(99), message='hello', date=datetime(2026, 3, 17, tzinfo=timezone.utc))
+        msg = SimpleNamespace(id=7, peer_id=types.PeerChat(42), from_id=types.PeerUser(99), message='hello', mentioned=False, out=False, date=datetime(2026, 3, 17, tzinfo=timezone.utc))
         user = SimpleNamespace(id=99, username='alice', first_name='Alice', last_name=None, bot=False)
         chat = SimpleNamespace(id=42, title='Cloud Chat', username=None)
         return SimpleNamespace(messages=[msg], users=[user], chats=[chat], dropped_count=0)
 
+    async def get_mentions(self, peer, limit=100):
+        msg = SimpleNamespace(id=9, peer_id=types.PeerChat(42), from_id=types.PeerUser(99), message='@you hello', mentioned=True, out=False, date=datetime(2026, 3, 17, tzinfo=timezone.utc))
+        return SimpleNamespace(messages=[msg], users=[], chats=[], dropped_count=0)
+
     async def send_message(self, peer, message):
-        return SimpleNamespace(id=8, peer_id=types.PeerChat(42), from_id=types.PeerUser(99), message=message, date=datetime(2026, 3, 17, tzinfo=timezone.utc))
+        return SimpleNamespace(id=8, peer_id=types.PeerChat(42), from_id=types.PeerUser(99), message=message, mentioned=False, out=True, date=datetime(2026, 3, 17, tzinfo=timezone.utc))
 
     async def mark_read(self, peer):
         return None
@@ -68,6 +77,11 @@ class CompatDispatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['ok'])
         self.assertIn('pts', result['state'])
 
+    async def test_resolve_peer(self):
+        result = await self.dispatcher.dispatch(self.session, {'method': 'resolve_peer', 'peer': '42'})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['peer']['class'], 'PeerChat')
+
     async def test_get_dialogs(self):
         result = await self.dispatcher.dispatch(self.session, {'method': 'get_dialogs'})
         self.assertTrue(result['ok'])
@@ -77,6 +91,11 @@ class CompatDispatcherTests(unittest.IsolatedAsyncioTestCase):
         result = await self.dispatcher.dispatch(self.session, {'method': 'get_history', 'peer': 42})
         self.assertTrue(result['ok'])
         self.assertEqual(result['messages'][0]['text'], 'hello')
+
+    async def test_get_mentions(self):
+        result = await self.dispatcher.dispatch(self.session, {'method': 'get_mentions', 'peer': 42})
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['messages'][0]['mentioned'])
 
     async def test_send_message_advances_state(self):
         before = self.session.state.pts

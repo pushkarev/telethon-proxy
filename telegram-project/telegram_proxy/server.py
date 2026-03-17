@@ -16,13 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class ProxyServer:
-    """JSON control server placeholder for the future MTProto facade.
-
-    This is intentionally not MTProto yet. It gives us an executable integration
-    harness for the policy engine and update fanout while the wire protocol layer
-    is built separately.
-    """
-
     def __init__(self, config: ProxyConfig) -> None:
         self.config = config
         self.upstream = UpstreamAdapter(config)
@@ -61,8 +54,12 @@ class ProxyServer:
                 line = await reader.readline()
                 if not line:
                     break
-                request = json.loads(line.decode("utf-8"))
-                response = await self.dispatcher.dispatch(session, request)
+                try:
+                    request = json.loads(line.decode("utf-8"))
+                    response = await self.dispatcher.dispatch(session, request)
+                except Exception as exc:  # deliberate boundary catch for harness stability
+                    logger.exception("Request failed")
+                    response = {"ok": False, "error": str(exc), "error_type": exc.__class__.__name__}
                 writer.write(json.dumps(response).encode("utf-8") + b"\n")
                 await writer.drain()
         finally:
@@ -76,9 +73,16 @@ class ProxyServer:
     async def _push_updates(self, writer: asyncio.StreamWriter, queue: asyncio.Queue, session: DownstreamSession) -> None:
         while True:
             envelope = await queue.get()
+            if session.principal is None:
+                continue
             state = session.state.advance_for_message()
-            writer.write(json.dumps({
-                "update": self.dispatcher._serialize_message(envelope.payload),
-                "state": self.dispatcher._serialize_state(state),
-            }).encode("utf-8") + b"\n")
+            writer.write(
+                json.dumps(
+                    {
+                        "update": envelope.to_dict(self.dispatcher._serialize_message),
+                        "state": self.dispatcher._serialize_state(state),
+                    }
+                ).encode("utf-8")
+                + b"\n"
+            )
             await writer.drain()

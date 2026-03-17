@@ -9,8 +9,10 @@ from telethon import TelegramClient, events, functions, types
 from .config import ProxyConfig
 from .filtering import ensure_allowed_peer, filter_messages_bundle
 from .folders import build_cloud_policy_snapshot
+from .hooks import IncomingHook
+from .peer_refs import PeerResolver
 from .policy import CloudPolicySnapshot
-from .update_bus import UpdateBus
+from .update_bus import UpdateBus, UpdateEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,8 @@ class UpstreamAdapter:
         )
         self.policy = CloudPolicySnapshot(folder_name=config.cloud_folder_name)
         self.update_bus = UpdateBus(buffer_size=config.update_buffer_size)
+        self.peer_resolver = PeerResolver()
+        self.incoming_hook = IncomingHook(config.incoming_hook_command)
         self._policy_lock = asyncio.Lock()
         self._refresh_task: asyncio.Task[None] | None = None
 
@@ -52,18 +56,57 @@ class UpstreamAdapter:
         dialogs = await self.client.get_dialogs(limit=limit)
         return [dialog for dialog in dialogs if self.policy.allows_peer(dialog.entity)]
 
+    async def resolve_peer(self, peer: Any) -> Any:
+        normalized = self.peer_resolver.normalize_peer_ref(peer)
+        if normalized == "me":
+            return "me"
+        entity = await self.client.get_input_entity(normalized)
+        ensure_allowed_peer(self.policy, entity, action="resolvePeer")
+        return entity
+
     async def get_history(self, peer: Any, limit: int = 100):
-        ensure_allowed_peer(self.policy, peer, action="getHistory")
-        result = await self.client(functions.messages.GetHistoryRequest(
-            peer=peer,
-            offset_id=0,
-            offset_date=None,
-            add_offset=0,
-            limit=limit,
-            max_id=0,
-            min_id=0,
-            hash=0,
-        ))
+        target = await self.resolve_peer(peer)
+        result = await self.client(
+            functions.messages.GetHistoryRequest(
+                peer=target,
+                offset_id=0,
+                offset_date=None,
+                add_offset=0,
+                limit=limit,
+                max_id=0,
+                min_id=0,
+                hash=0,
+            )
+        )
+        return filter_messages_bundle(
+            policy=self.policy,
+            messages=result.messages,
+            chats=result.chats,
+            users=result.users,
+            allow_member_listing=self.config.allow_member_listing,
+        )
+
+    async def get_mentions(self, peer: Any, limit: int = 100):
+        target = await self.resolve_peer(peer)
+        result = await self.client(
+            functions.messages.SearchRequest(
+                peer=target,
+                q="",
+                filter=types.InputMessagesFilterMyMentions(),
+                min_date=None,
+                max_date=None,
+                offset_id=0,
+                add_offset=0,
+                limit=limit,
+                max_id=0,
+                min_id=0,
+                hash=0,
+                from_id=None,
+                saved_peer_id=None,
+                saved_reaction=None,
+                top_msg_id=None,
+            )
+        )
         return filter_messages_bundle(
             policy=self.policy,
             messages=result.messages,
@@ -73,25 +116,46 @@ class UpstreamAdapter:
         )
 
     async def send_message(self, peer: Any, message: str):
-        ensure_allowed_peer(self.policy, peer, action="sendMessage")
-        return await self.client.send_message(peer, message)
+        target = await self.resolve_peer(peer)
+        return await self.client.send_message(target, message)
 
     async def mark_read(self, peer: Any):
-        ensure_allowed_peer(self.policy, peer, action="readHistory")
-        return await self.client.send_read_acknowledge(peer)
+        target = await self.resolve_peer(peer)
+        return await self.client.send_read_acknowledge(target)
 
     async def list_participants(self, peer: Any, limit: int = 100):
-        ensure_allowed_peer(self.policy, peer, action="getParticipants")
-        participants = await self.client.get_participants(peer, limit=limit)
+        target = await self.resolve_peer(peer)
+        participants = await self.client.get_participants(target, limit=limit)
         return participants
 
     async def _on_new_message(self, event) -> None:
-        await self._publish_if_allowed(event.message)
+        await self._publish_if_allowed(event.message, kind="new_message")
 
     async def _on_message_edited(self, event) -> None:
-        await self._publish_if_allowed(event.message)
+        await self._publish_if_allowed(event.message, kind="message_edited")
 
-    async def _publish_if_allowed(self, message: types.Message) -> None:
+    async def _publish_if_allowed(self, message: types.Message, *, kind: str) -> None:
         peer = getattr(message, "peer_id", None)
-        if peer is not None and self.policy.allows_peer(peer):
-            await self.update_bus.publish(message)
+        if peer is None or not self.policy.allows_peer(peer):
+            return
+        peer_id = self.peer_resolver.peer_id(peer)
+        envelope = UpdateEnvelope(
+            kind=kind,
+            payload=message,
+            peer_id=peer_id,
+            message_id=getattr(message, "id", None),
+            mentioned=bool(getattr(message, "mentioned", False)),
+            incoming=bool(getattr(message, "out", False) is False),
+        )
+        await self.update_bus.publish(envelope)
+        if envelope.incoming:
+            await self.incoming_hook.deliver(
+                {
+                    "kind": envelope.kind,
+                    "peer_id": envelope.peer_id,
+                    "message_id": envelope.message_id,
+                    "mentioned": envelope.mentioned,
+                    "incoming": envelope.incoming,
+                    "text": getattr(message, "message", None),
+                }
+            )

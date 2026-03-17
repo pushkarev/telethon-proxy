@@ -169,3 +169,23 @@ Environment variables:
 - `TP_DOWNSTREAM_API_HASH`
 - `TP_DOWNSTREAM_LOGIN_CODE`
 - `TP_DOWNSTREAM_PASSWORD`
+
+
+### Messaging-focused proxy surface
+
+The current harness now covers the messaging slice that matters most for an LLM-style Telegram client:
+- `resolve_peer`
+- `get_dialogs`
+- `get_history`
+- `get_mentions`
+- `send_message`
+- `mark_read`
+- `list_participants`
+- pushed updates with `incoming` / `mentioned` metadata
+- optional local incoming hook via `TP_INCOMING_HOOK`
+
+Still out of scope for now:
+- account settings
+- privacy/config mutation
+- folders mutation
+- general Telegram feature completeness
