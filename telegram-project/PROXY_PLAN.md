@@ -34,11 +34,11 @@ That is the next major milestone.
 - [x] Provide a local control server for testing the policy engine
 
 ### M2: Request surface for required downstream behavior
-- [ ] Dialog list
-- [ ] History
-- [ ] Send text
-- [ ] Read acknowledgements
-- [ ] Participant listing
+- [x] Dialog list (integration harness)
+- [x] History (integration harness)
+- [x] Send text (integration harness)
+- [x] Read acknowledgements (integration harness)
+- [x] Participant listing (integration harness)
 - [ ] Media download/upload policy
 - [ ] Search and entity resolution policy
 

@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from contextlib import suppress
 
+from .compat import CompatDispatcher, DownstreamSession
 from .config import ProxyConfig
+from .session_state import VirtualUpdateState
 from .upstream import UpstreamAdapter
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,7 @@ class ProxyServer:
     def __init__(self, config: ProxyConfig) -> None:
         self.config = config
         self.upstream = UpstreamAdapter(config)
+        self.dispatcher = CompatDispatcher(self.upstream)
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -47,16 +51,18 @@ class ProxyServer:
             await self._server.serve_forever()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        session = DownstreamSession(session_id=str(uuid.uuid4()), state=VirtualUpdateState())
         update_queue = self.upstream.update_bus.subscribe()
-        update_task = asyncio.create_task(self._push_updates(writer, update_queue))
+        update_task = asyncio.create_task(self._push_updates(writer, update_queue, session))
         try:
             while not reader.at_eof():
                 line = await reader.readline()
                 if not line:
                     break
                 request = json.loads(line.decode("utf-8"))
-                response = await self._dispatch(request)
-                writer.write(json.dumps(response).encode("utf-8") + b"\n")
+                response = await self.dispatcher.dispatch(session, request)
+                writer.write(json.dumps(response).encode("utf-8") + b"
+")
                 await writer.drain()
         finally:
             update_task.cancel()
@@ -66,24 +72,13 @@ class ProxyServer:
             writer.close()
             await writer.wait_closed()
 
-    async def _dispatch(self, request: dict) -> dict:
-        method = request.get("method")
-        if method == "refresh_policy":
-            policy = await self.upstream.refresh_policy()
-            return {"ok": True, "allowed_peers": sorted(policy.allowed_peers)}
-        if method == "get_dialogs":
-            dialogs = await self.upstream.get_dialogs(limit=int(request.get("limit", 100)))
-            return {
-                "ok": True,
-                "dialogs": [
-                    {"id": getattr(dialog.entity, "id", None), "name": dialog.name}
-                    for dialog in dialogs
-                ],
-            }
-        return {"ok": False, "error": f"unsupported method: {method}"}
-
-    async def _push_updates(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
+    async def _push_updates(self, writer: asyncio.StreamWriter, queue: asyncio.Queue, session: DownstreamSession) -> None:
         while True:
             envelope = await queue.get()
-            writer.write(json.dumps({"update": str(envelope.payload)}).encode("utf-8") + b"\n")
+            state = session.state.advance_for_message()
+            writer.write(json.dumps({
+                "update": self.dispatcher._serialize_message(envelope.payload),
+                "state": self.dispatcher._serialize_state(state),
+            }).encode("utf-8") + b"
+")
             await writer.drain()

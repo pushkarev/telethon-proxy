@@ -99,3 +99,26 @@ source .venv/bin/activate
 python -m unittest tests.test_filtering -v
 python proxy_main.py
 ```
+
+
+### Control server request examples
+
+Once `python proxy_main.py` is running, you can talk to the integration harness with newline-delimited JSON:
+
+```bash
+printf '{"method":"get_state"}
+' | nc 127.0.0.1 9000
+printf '{"method":"get_dialogs","limit":20}
+' | nc 127.0.0.1 9000
+printf '{"method":"get_history","peer":"me","limit":20}
+' | nc 127.0.0.1 9000
+```
+
+Supported harness methods today:
+- `get_state`
+- `refresh_policy`
+- `get_dialogs`
+- `get_history`
+- `send_message`
+- `mark_read`
+- `list_participants`
