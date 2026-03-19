@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from config_paths import load_project_env
 
 
 API_ROOT = "https://api.telegram.org"
@@ -66,7 +66,7 @@ def run_hook(hook_path: str, update: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    load_dotenv()
+    load_project_env()
 
     bot_token = require_env("TG_BOT_TOKEN")
     target_username = os.getenv("TG_BOT_USERNAME", "fewijhca3fih4bot")
