@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from dotenv import load_dotenv
-
+from config_paths import load_project_env
 from telegram_proxy.config import ProxyConfig
 
 
 def main() -> None:
-    load_dotenv()
+    env_path = load_project_env()
     config = ProxyConfig.from_env()
 
     print('Proxy setup check')
     print('-----------------')
+    print(f'Env file: {env_path}')
     print(f'Listen: {config.listen_host}:{config.listen_port}')
     print(f'Cloud folder: {config.cloud_folder_name}')
     print(f'Upstream session: {config.upstream_session_path}')

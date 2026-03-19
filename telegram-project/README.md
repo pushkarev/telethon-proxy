@@ -13,8 +13,13 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    ```bash
    pip install -r requirements.txt
    ```
-3. Copy `.env.example` to `.env` and fill in your Telegram API credentials.
-4. Run the auth check:
+3. Create the default config directory and copy the example env there:
+   ```bash
+   mkdir -p ~/.tlt-proxy
+   cp .env.example ~/.tlt-proxy/.env
+   ```
+4. Fill in your Telegram API credentials in `~/.tlt-proxy/.env`.
+5. Run the auth check:
    ```bash
    python app.py
    ```
@@ -75,8 +80,9 @@ You will need:
 
 ## Notes
 
-- Session data is stored in `sessions/sample_account.session`.
-- Never commit your real `.env` file or session files.
+- By default, config lives in `~/.tlt-proxy/.env`.
+- By default, session data is stored under `~/.tlt-proxy/sessions/`.
+- Never commit your real env file or session files.
 
 ## Telegram-compatible proxy scaffold
 
@@ -126,11 +132,12 @@ Supported harness methods today:
 
 ## Proxy setup for a real Telegram account
 
-1. Copy the proxy env template:
+1. Copy the proxy env template into the default config location:
    ```bash
-   cp .env.proxy.example .env
+   mkdir -p ~/.tlt-proxy
+   cp .env.proxy.example ~/.tlt-proxy/.env
    ```
-2. Fill in:
+2. Fill in `~/.tlt-proxy/.env`:
    - `TG_API_ID`
    - `TG_API_HASH`
    - `TG_PHONE`

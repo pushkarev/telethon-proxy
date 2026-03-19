@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from config_paths import config_home
+
 
 @dataclass(slots=True)
 class ProxyConfig:
@@ -16,7 +18,7 @@ class ProxyConfig:
     upstream_api_id: int = 0
     upstream_api_hash: str = ""
     upstream_phone: str = ""
-    upstream_session_name: str = "sessions/proxy_upstream"
+    upstream_session_name: str = str(config_home() / "sessions/proxy_upstream")
     cloud_folder_name: str = "Cloud"
     allow_member_listing: bool = True
     update_buffer_size: int = 1000
@@ -24,7 +26,7 @@ class ProxyConfig:
 
     @property
     def upstream_session_path(self) -> Path:
-        path = Path(self.upstream_session_name)
+        path = Path(self.upstream_session_name).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -40,7 +42,7 @@ class ProxyConfig:
             upstream_api_id=int(os.getenv("TG_API_ID", "0")),
             upstream_api_hash=os.getenv("TG_API_HASH", ""),
             upstream_phone=os.getenv("TG_PHONE", ""),
-            upstream_session_name=os.getenv("TP_UPSTREAM_SESSION", "sessions/proxy_upstream"),
+            upstream_session_name=os.getenv("TP_UPSTREAM_SESSION", str(config_home() / "sessions/proxy_upstream")),
             cloud_folder_name=os.getenv("TP_CLOUD_FOLDER", "Cloud"),
             allow_member_listing=os.getenv("TP_ALLOW_MEMBER_LISTING", "1") not in {"0", "false", "False"},
             update_buffer_size=int(os.getenv("TP_UPDATE_BUFFER_SIZE", "1000")),

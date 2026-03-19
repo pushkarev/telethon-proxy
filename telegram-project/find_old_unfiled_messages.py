@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from dotenv import load_dotenv
+from config_paths import load_project_env
 from telethon import functions, types, utils
 from telethon.sync import TelegramClient
 
@@ -182,14 +182,14 @@ def chunked(values: list[int], size: int):
 
 def main() -> None:
     args = parse_args()
-    load_dotenv()
+    load_project_env()
 
     api_id = int(require_env("TG_API_ID"))
     api_hash = require_env("TG_API_HASH")
     phone = require_env("TG_PHONE")
-    session_name = os.getenv("TG_SESSION_NAME", "sessions/sample_account")
+    session_name = os.getenv("TG_SESSION_NAME", str(Path.home() / ".tlt-proxy/sessions/sample_account"))
 
-    session_path = Path(session_name)
+    session_path = Path(session_name).expanduser()
     session_path.parent.mkdir(parents=True, exist_ok=True)
 
     client = TelegramClient(str(session_path), api_id, api_hash)
