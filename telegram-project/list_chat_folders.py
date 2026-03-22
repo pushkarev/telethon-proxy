@@ -1,17 +1,12 @@
 import os
+import asyncio
 from pathlib import Path
 from typing import Iterable
 
 from config_paths import load_project_env
 from telethon import functions, types, utils
-from telethon.sync import TelegramClient
-
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+from telethon import TelegramClient
+from telegram_auth import prompt_value, resolve_runtime_credentials
 
 
 def title_text(title: object) -> str:
@@ -85,22 +80,24 @@ def iter_named_filters(filters: Iterable[object]):
             yield dialog_filter
 
 
-def main() -> None:
+async def amain() -> None:
     load_project_env()
 
-    api_id = int(require_env("TG_API_ID"))
-    api_hash = require_env("TG_API_HASH")
-    phone = require_env("TG_PHONE")
+    credentials = resolve_runtime_credentials(require_phone=False)
     session_name = os.getenv("TG_SESSION_NAME", str(Path.home() / ".tlt-proxy/sessions/sample_account"))
 
     session_path = Path(session_name).expanduser()
     session_path.parent.mkdir(parents=True, exist_ok=True)
 
-    client = TelegramClient(str(session_path), api_id, api_hash)
+    client = TelegramClient(str(session_path), credentials.api_id, credentials.api_hash)
+    await client.connect()
 
-    with client:
-        client.start(phone=phone)
-        filters_result = client(functions.messages.GetDialogFiltersRequest())
+    try:
+        if not await client.is_user_authorized():
+            phone = credentials.phone or prompt_value("TG_PHONE", "Telegram phone number: ")[0]
+            await client.start(phone=phone)
+
+        filters_result = await client(functions.messages.GetDialogFiltersRequest())
         named_filters = list(iter_named_filters(filters_result.filters))
 
         filter_rules = []
@@ -110,7 +107,7 @@ def main() -> None:
             excluded_keys = {peer_key(peer) for peer in getattr(dialog_filter, "exclude_peers", [])}
             filter_rules.append((title_text(dialog_filter.title), dialog_filter, included_keys, excluded_keys))
 
-        for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
+        async for dialog in client.iter_dialogs(ignore_pinned=False, archived=None):
             folder_names = [
                 name
                 for name, dialog_filter, included_keys, excluded_keys in filter_rules
@@ -118,6 +115,12 @@ def main() -> None:
             ]
             suffix = ", ".join(folder_names) if folder_names else "<none>"
             print(f"{dialog.name}: {suffix}")
+    finally:
+        await client.disconnect()
+
+
+def main() -> None:
+    asyncio.run(amain())
 
 
 if __name__ == "__main__":

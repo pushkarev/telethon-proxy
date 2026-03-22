@@ -10,13 +10,13 @@ class PeerResolver:
         if isinstance(peer, (types.TypePeer, types.TypeInputPeer)):
             return peer
         if isinstance(peer, int):
-            return utils.resolve_id(peer)[0]
+            return self._peer_from_id(peer)
         if isinstance(peer, str):
             text = peer.strip()
             if text == "me":
                 return "me"
             if text.lstrip("-").isdigit():
-                return utils.resolve_id(int(text))[0]
+                return self._peer_from_id(int(text))
             return text
         return peer
 
@@ -25,3 +25,7 @@ class PeerResolver:
         if isinstance(normalized, int):
             return normalized
         return utils.get_peer_id(normalized)
+
+    def _peer_from_id(self, peer_id: int) -> Any:
+        real_id, peer_type = utils.resolve_id(peer_id)
+        return peer_type(real_id)

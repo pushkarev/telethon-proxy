@@ -11,9 +11,11 @@ def main() -> None:
     print('Proxy setup check')
     print('-----------------')
     print(f'Env file: {env_path}')
-    print(f'Listen: {config.listen_host}:{config.listen_port}')
+    print(f'Control server: {config.control_host}:{config.control_port}')
+    print(f'MTProto endpoint: {config.mtproto_host}:{config.mtproto_port}')
     print(f'Cloud folder: {config.cloud_folder_name}')
     print(f'Upstream session: {config.upstream_session_path}')
+    print(f'Downstream registry: {config.downstream_registry_path}')
     print(f'Member listing allowed: {config.allow_member_listing}')
     print(f'Buffer size: {config.update_buffer_size}')
     print()
@@ -36,7 +38,8 @@ def main() -> None:
     print('Next steps:')
     print('  1. python app.py')
     print('  2. python list_chat_folders.py')
-    print('  3. python proxy_main.py')
+    print('  3. python proxy_service.py')
+    print('  4. python proxy_service.py --issue-session')
 
 
 if __name__ == '__main__':

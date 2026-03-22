@@ -93,17 +93,20 @@ What exists today:
 - policy enforcement for history/send/read/participants
 - filtered update fanout from one upstream Telethon session
 - a simple local JSON control server (`proxy_main.py`) for integration testing
-- unit tests for the core filtering rules
+- a local MTProto endpoint for Telethon clients via `proxy_service.py`
+- downstream proxy-session issuing so clients do not receive upstream Telegram secrets
+- unit and integration tests for both filtering rules and the Telethon-facing endpoint
 
-What does **not** exist yet:
-- MTProto wire compatibility for unmodified downstream Telethon clients
+Important compatibility note:
+- downstream Telethon clients need a **proxy-issued session string**
+- the proxy does **not** implement Telegram's public-RSA first-connect handshake for arbitrary new clients
+- this keeps the design local and prevents exposing upstream Telegram auth material
 
-Run the current scaffold:
+Run the test suite:
 
 ```bash
 source .venv/bin/activate
-python -m unittest tests.test_filtering -v
-python proxy_main.py
+python -m unittest discover -s tests -v
 ```
 
 
@@ -141,6 +144,7 @@ Supported harness methods today:
    - `TG_API_ID`
    - `TG_API_HASH`
    - `TG_PHONE`
+   Or, if you prefer not to keep Telegram app credentials in a file, leave them unset and enter them interactively when running `app.py --qr`.
 3. Check config:
    ```bash
    source .venv/bin/activate
@@ -150,14 +154,58 @@ Supported harness methods today:
    ```bash
    python app.py
    ```
+   Or run it with inline env vars for a one-off interactive login:
+   ```bash
+   TG_API_ID=12345 \
+   TG_API_HASH=your_api_hash \
+   TG_PHONE=+15550000000 \
+   TG_SESSION_NAME=~/.tlt-proxy/sessions/proxy_upstream \
+   python app.py
+   ```
+   The script will prompt in the terminal for the Telegram login code and, if needed, the 2FA password.
+   For QR login without storing Telegram app credentials in `~/.tlt-proxy/.env`:
+   ```bash
+   TG_SESSION_NAME=~/.tlt-proxy/sessions/proxy_upstream \
+   python app.py --qr --qr-png
+   ```
+   That flow prompts for `TG_API_ID` and `TG_API_HASH` interactively, saves a QR PNG, and does not require `TG_PHONE`.
+   If the QR expires before you approve it, the tool now regenerates a fresh QR instead of exiting.
 5. Verify the folder named `Cloud` exists and contains the chats you want:
    ```bash
    python list_chat_folders.py
    ```
-6. Start the proxy harness:
+6. Start the proxy service:
    ```bash
-   python proxy_main.py
+   python proxy_service.py
    ```
+7. Issue a downstream Telethon session:
+   ```bash
+   python proxy_service.py --issue-session
+   ```
+
+Example output:
+
+```text
+label=proxy
+key_id=123456789
+session=1...
+api_id=900000
+api_hash=dev-proxy-change-me
+```
+
+Use those `api_id` / `api_hash` values with the issued `session` in your downstream Telethon client.
+The proxy now also prints the advertised `host` / `port` so you can point a client on another machine at the right endpoint.
+
+Example client:
+
+```python
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
+client = TelegramClient(StringSession("PASTE_PROXY_SESSION_HERE"), 900000, "dev-proxy-change-me", receive_updates=False)
+await client.start(phone="+15550000000", code_callback=lambda: "00000")
+dialogs = await client.get_dialogs()
+```
 
 
 ### Downstream auth model
@@ -180,19 +228,72 @@ Environment variables:
 
 ### Messaging-focused proxy surface
 
-The current harness now covers the messaging slice that matters most for an LLM-style Telegram client:
+The current local endpoint now covers the messaging slice that matters most for an LLM-style Telegram client:
 - `resolve_peer`
 - `get_dialogs`
 - `get_history`
-- `get_mentions`
 - `send_message`
 - `mark_read`
 - `list_participants`
-- pushed updates with `incoming` / `mentioned` metadata
+- proxy-side `auth.sendCode` / `auth.signIn`
+- `help.getConfig`, `users.getUsers(self)`, `updates.getState`, `updates.getDifference`
 - optional local incoming hook via `TP_INCOMING_HOOK`
 
 Still out of scope for now:
+- arbitrary first-connect Telegram RSA handshake for fresh clients
 - account settings
 - privacy/config mutation
 - folders mutation
 - general Telegram feature completeness
+
+### macOS launchd
+
+For local-only testing on the same Mac, the defaults are fine.
+
+For a client on another device in your LAN, add these to `~/.tlt-proxy/.env` first:
+
+```env
+TP_MTPROTO_HOST=0.0.0.0
+TP_DOWNSTREAM_HOST=YOUR_MAC_LAN_IP
+```
+
+Example:
+
+```env
+TP_MTPROTO_HOST=0.0.0.0
+TP_DOWNSTREAM_HOST=10.11.15.81
+```
+
+For Tailscale-only access, keep the bind host at `0.0.0.0` and advertise your Tailscale IPv4 instead:
+
+```env
+TP_MTPROTO_HOST=0.0.0.0
+TP_DOWNSTREAM_HOST=100.x.y.z
+```
+
+Install and start the `launchd` service in one step:
+
+```bash
+python proxy_service.py --install-launchd
+```
+
+Check status:
+
+```bash
+python proxy_service.py --launchd-status
+```
+
+Remove it:
+
+```bash
+python proxy_service.py --uninstall-launchd
+```
+
+If you want the raw plist without installing it, you can still print it:
+
+```bash
+python proxy_service.py --print-launchd-plist > ~/Library/LaunchAgents/dev.telethon-proxy.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.telethon-proxy.plist
+launchctl enable gui/$(id -u)/dev.telethon-proxy
+launchctl kickstart -k gui/$(id -u)/dev.telethon-proxy
+```

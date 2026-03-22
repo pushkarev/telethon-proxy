@@ -20,8 +20,10 @@ This repository now contains the **policy-critical core**:
 
 ## Deliberate non-goal in this commit
 
-This commit does **not** yet implement the MTProto wire protocol that unmodified Telethon clients require.
-That is the next major milestone.
+This commit now includes a **local MTProto endpoint** for Telethon clients that use a proxy-issued session.
+
+It still does **not** implement Telegram's arbitrary first-connect RSA handshake for fresh, unprovisioned clients.
+That remains the next major milestone if fully transparent client onboarding is needed.
 
 ## v1 milestones
 
@@ -48,11 +50,11 @@ That is the next major milestone.
 - [ ] Prevent hidden upstream updates from corrupting downstream state
 
 ### M4: MTProto compatibility layer
-- [ ] Transport framing
-- [ ] Auth key negotiation
-- [ ] Minimal request dispatcher
-- [ ] `invokeWithLayer` / `initConnection`
-- [ ] TL object encode/decode surface for selected methods
+- [x] Transport framing
+- [ ] Auth key negotiation for arbitrary fresh clients
+- [x] Minimal request dispatcher
+- [x] `invokeWithLayer` / `initConnection`
+- [x] TL object encode/decode surface for selected methods
 
 ## Practical next step
 
