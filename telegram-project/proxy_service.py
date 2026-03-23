@@ -11,14 +11,11 @@ from pathlib import Path
 
 from config_paths import load_project_env
 from telegram_proxy.config import ProxyConfig
-from telegram_proxy.downstream_registry import DownstreamRegistry
 from telegram_proxy.service import ProxyService
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the local Telethon-compatible proxy service.")
-    parser.add_argument("--issue-session", action="store_true", help="Issue a downstream Telethon session string and exit.")
-    parser.add_argument("--label", default=None, help="Label for the issued downstream session.")
+    parser = argparse.ArgumentParser(description="Run the local messaging bridge service.")
     parser.add_argument("--print-launchd-plist", action="store_true", help="Print a launchd plist for this service and exit.")
     parser.add_argument("--install-launchd", action="store_true", help="Install and start the macOS launchd service.")
     parser.add_argument("--uninstall-launchd", action="store_true", help="Stop and remove the macOS launchd service.")
@@ -52,16 +49,6 @@ def render_launchd_plist(config: ProxyConfig, *, label: str) -> str:
   <dict>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
-    <key>TP_MTPROTO_HOST</key>
-    <string>{config.mtproto_host}</string>
-    <key>TP_MTPROTO_PORT</key>
-    <string>{config.mtproto_port}</string>
-    <key>TP_CONTROL_HOST</key>
-    <string>{config.control_host}</string>
-    <key>TP_CONTROL_PORT</key>
-    <string>{config.control_port}</string>
-    <key>TP_DOWNSTREAM_REGISTRY</key>
-    <string>{config.downstream_registry_name}</string>
     <key>TG_ENV_FILE</key>
     <string>{env_path}</string>
   </dict>
@@ -71,23 +58,6 @@ def render_launchd_plist(config: ProxyConfig, *, label: str) -> str:
   <string>{Path.home() / 'Library/Logs/telethon-proxy.log'}</string>
 </dict>
 </plist>"""
-
-
-def issue_session(config: ProxyConfig, *, label: str | None) -> int:
-    registry = DownstreamRegistry(config.downstream_registry_path)
-    issued = registry.issue_session(
-        label=label or config.downstream_session_label,
-        host=config.mtproto_host,
-        port=config.mtproto_port,
-    )
-    print(f"label={issued.label}")
-    print(f"key_id={issued.key_id}")
-    print(f"session={issued.session_string}")
-    print(f"host={config.downstream_host}")
-    print(f"port={config.mtproto_port}")
-    print(f"api_id={config.downstream_api_id}")
-    print(f"api_hash={config.downstream_api_hash}")
-    return 0
 
 
 def launch_agent_path(label: str) -> Path:
@@ -121,9 +91,8 @@ def install_launchd(config: ProxyConfig, *, label: str) -> int:
     print(f"installed={plist_path}")
     print(f"target={target}")
     print(f"user={getuser()}")
-    print(f"listen_host={config.mtproto_host}")
-    print(f"advertise_host={config.downstream_host}")
-    print(f"mtproto_port={config.mtproto_port}")
+    print(f"dashboard={config.dashboard_host}:{config.dashboard_port}")
+    print(f"mcp={config.mcp_endpoint}")
     return 0
 
 
@@ -156,8 +125,6 @@ async def amain() -> int:
     args = build_parser().parse_args()
     config = ProxyConfig.from_env()
 
-    if args.issue_session:
-        return issue_session(config, label=args.label)
     if args.print_launchd_plist:
         print(render_launchd_plist(config, label=args.launchd_label))
         return 0

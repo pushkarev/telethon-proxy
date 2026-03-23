@@ -46,7 +46,7 @@
             <div class="folder-name" id="telegramFolderName">Telegram</div>
             <span class="connection-check" id="telegramConnectionCheck" hidden aria-hidden="true">✓</span>
           </div>
-          <div class="folder-meta">Cloud chats, forwarded APIs, and the upstream login flow.</div>
+          <div class="folder-meta">Cloud chats, MCP-visible scope, and the upstream login flow.</div>
         </button>
         <button class="folder-button" data-section="whatsapp">
           <div class="folder-label-row">
@@ -73,7 +73,7 @@
           <div class="section-head">
             <div>
               <h2>Telegram</h2>
-              <div class="section-copy">Inspect Cloud-folder chats, forwarded upstream APIs, and the local upstream sign-in state.</div>
+              <div class="section-copy">Inspect Cloud-folder chats, the MCP-visible Telegram scope, and the local upstream sign-in state.</div>
             </div>
             <span class="badge" id="telegramBadge">Cloud access</span>
           </div>
@@ -81,8 +81,6 @@
             <div class="telegram-shell">
               <div class="telegram-nav">
                 <button class="telegram-pane-button active" data-telegram-pane="chats" id="telegramChatsTab">Chats</button>
-                <button class="telegram-pane-button" data-telegram-pane="apis">APIs</button>
-                <button class="telegram-pane-button" data-telegram-pane="mtproto">MTProto</button>
                 <button class="telegram-pane-button" data-telegram-pane="settings">Settings</button>
               </div>
 
@@ -93,7 +91,7 @@
                     <span class="pill">Important</span>
                   </div>
                   <div class="meta">
-                    Only chats placed in the special <span class="mono">Cloud</span> folder on the upstream Telegram account are exposed here and to downstream proxy clients. If a chat is missing, add it to that folder first.
+                    Only chats placed in the special <span class="mono">Cloud</span> folder on the upstream Telegram account are exposed here and through MCP. If a chat is missing, add it to that folder first.
                   </div>
                 </div>
                 <div class="chat-shell">
@@ -117,58 +115,6 @@
                 </div>
               </section>
 
-              <section class="telegram-pane" data-telegram-pane-panel="apis">
-                <div class="api-columns">
-                  <div class="info-card">
-                    <div class="info-card-head">
-                      <div class="section-kicker">Forwarded upstream</div>
-                      <h3>Methods passed through</h3>
-                    </div>
-                    <div class="api-list" id="forwardedApis"></div>
-                  </div>
-                  <div class="info-card">
-                    <div class="info-card-head">
-                      <div class="section-kicker">Handled locally</div>
-                      <h3>Proxy-owned methods</h3>
-                    </div>
-                    <div class="api-list" id="localApis"></div>
-                  </div>
-                </div>
-              </section>
-
-              <section class="telegram-pane" data-telegram-pane-panel="mtproto">
-                <div class="settings-grid mtproto-settings-grid">
-                  <div class="credential-card auth-guide">
-                    <div class="row">
-                      <div class="title">MTProto downstream access</div>
-                      <span class="pill">Telethon-compatible</span>
-                    </div>
-                    <div class="meta">
-                      Turn the MTProto proxy on when you want downstream Telegram clients to connect through this desktop app. When enabled, the client connection details and issued session strings appear below.
-                    </div>
-                  </div>
-
-                  <div class="credential-card" id="mtprotoStatusCard"></div>
-
-                  <div class="credential-card">
-                    <div class="row">
-                      <div class="title">Listener control</div>
-                      <span class="pill" id="mtprotoTogglePill">Enabled</span>
-                    </div>
-                    <label class="toggle-row" for="mtprotoEnabledCheckbox">
-                      <input id="mtprotoEnabledCheckbox" type="checkbox" />
-                      <span class="toggle-box" aria-hidden="true"></span>
-                      <div>
-                        <div class="title-small">Enable MTProto proxy</div>
-                        <div class="meta" id="mtprotoToggleMeta">Downstream clients can connect through the local proxy.</div>
-                      </div>
-                    </label>
-                  </div>
-
-                  <div class="credential-card mtproto-credentials-card" id="mtprotoCredentialsCard"></div>
-                </div>
-              </section>
-
               <section class="telegram-pane" data-telegram-pane-panel="settings">
                 <div class="settings-grid">
                   <div class="credential-card auth-guide">
@@ -183,7 +129,7 @@
                       4. Copy the <span class="mono">App api_id</span> and <span class="mono">App api_hash</span> into the fields below.<br />
                       5. These credentials stay only on this Mac and are stored locally in Keychain. Once sign-in succeeds, the Telegram session is also saved there automatically.<br />
                       6. Request a Telegram login code, then finish with the SMS/app code and, if your account uses it, the 2FA password.<br />
-                      7. Only chats inside the special <span class="mono">Cloud</span> folder will be visible to downstream proxy clients.
+                      7. Only chats inside the special <span class="mono">Cloud</span> folder will be visible through MCP.
                     </div>
                   </div>
 
@@ -380,16 +326,16 @@
                   <section class="imessage-pane" data-imessage-pane-panel="visible-chats">
                     <div class="credential-card auth-guide chat-hint">
                       <div class="row">
-                        <div class="title">Visible downstream set</div>
+                        <div class="title">Visible through MCP</div>
                         <span class="pill">MCP scope</span>
                       </div>
                       <div class="meta">
-                        Only the chats listed here are passed downstream. MCP chat listing, history, updates, and sends are restricted to this visible set.
+                        Only the chats listed here are exposed through MCP. Chat listing, history, updates, and sends are restricted to this visible set.
                       </div>
                     </div>
                     <div class="sidebar-heading">
                       <div class="section-kicker">Visible chats</div>
-                      <h3>Downstream Messages</h3>
+                      <h3>MCP-visible Messages</h3>
                     </div>
                     <div class="chat-list" id="imessageVisibleChatList"></div>
                   </section>

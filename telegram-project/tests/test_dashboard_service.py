@@ -10,7 +10,6 @@ from telethon import types
 
 from telegram_proxy.config import ProxyConfig
 from telegram_proxy.dashboard_service import ProxyDashboardServer
-from telegram_proxy.downstream_registry import DownstreamRegistry
 from telegram_proxy.secrets_store import UpstreamSecrets
 
 
@@ -68,30 +67,6 @@ class _FakeUpstream:
             "phone": "79936003330",
             "username": "dimapush",
         }
-
-
-class _FakeMTProto:
-    def __init__(self) -> None:
-        self.is_running = True
-
-    def active_connections_snapshot(self):
-        return [
-            {
-                "connection_id": 1,
-                "key_id": 123,
-                "label": "openclaw",
-                "phone": "+15550000000",
-                "connected_at": _now().isoformat(),
-                "remote_addr": "100.64.0.2:50000",
-                "authorized": True,
-            }
-        ]
-
-    async def start(self):
-        self.is_running = True
-
-    async def stop(self):
-        self.is_running = False
 
 
 class _FakeMcp:
@@ -297,20 +272,13 @@ class _FakeIMessage:
 class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        registry_path = Path(self.tmp.name) / "registry.json"
         self.config = ProxyConfig(
             dashboard_host="127.0.0.1",
             dashboard_port=0,
-            downstream_host="100.92.237.54",
-            mtproto_port=9001,
-            downstream_api_id=900000,
             cloud_folder_name="Cloud",
             imessage_enabled=True,
-            downstream_registry_name=str(registry_path),
             mcp_token="test-mcp-token",
         )
-        self.registry = DownstreamRegistry(self.config.downstream_registry_path)
-        self.registry.issue_session(label="dashboard-test", host="127.0.0.1", port=9001)
         self.telegram_auth = _FakeTelegramAuth()
         self.secret_store = _FakeSecretStore()
         self.whatsapp = _FakeWhatsApp()
@@ -319,8 +287,6 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.server = ProxyDashboardServer(
             self.config,
             _FakeUpstream(),
-            self.registry,
-            _FakeMTProto(),
             self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
@@ -351,14 +317,9 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertEqual(payload["config"]["cloud_folder_name"], "Cloud")
-        self.assertTrue(payload["config"]["mtproto_enabled"])
-        self.assertTrue(payload["config"]["mtproto_listening"])
         self.assertTrue(payload["config"]["imessage_enabled"])
-        self.assertEqual(payload["clients"][0]["label"], "openclaw")
         self.assertEqual(payload["chats"][0]["title"], "Cloud Chat")
         self.assertEqual(payload["upstream"]["phone"], "79936003330")
-        self.assertEqual(payload["downstream_credentials"][0]["label"], "dashboard-test")
-        self.assertTrue(payload["downstream_credentials"][0]["session_string"])
         self.assertEqual(payload["telegram_auth"]["keychain_backend"], "macOS Keychain")
         self.assertEqual(payload["whatsapp"]["chats"][0]["title"], "Cloud WA Chat")
         self.assertEqual(payload["imessage"]["chats"][0]["title"], "Alice")
@@ -446,27 +407,6 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(body)
         self.assertIn("TP_MCP_TLS_CERT", payload["error"])
         self.assertEqual(self.config.mcp_scheme, "http")
-
-    async def test_mtproto_enable_toggle_route(self):
-        status, body = await self._post("/api/mtproto/enabled", {"enabled": False})
-        self.assertEqual(status, 200)
-        payload = json.loads(body)
-        self.assertFalse(payload["enabled"])
-        self.assertFalse(payload["listening"])
-        self.assertFalse(self.config.mtproto_enabled)
-
-        status, body = await self._get("/api/overview")
-        self.assertEqual(status, 200)
-        payload = json.loads(body)
-        self.assertFalse(payload["config"]["mtproto_enabled"])
-        self.assertFalse(payload["config"]["mtproto_listening"])
-
-        status, body = await self._post("/api/mtproto/enabled", {"enabled": True})
-        self.assertEqual(status, 200)
-        payload = json.loads(body)
-        self.assertTrue(payload["enabled"])
-        self.assertTrue(payload["listening"])
-        self.assertTrue(self.config.mtproto_enabled)
 
     async def test_telegram_auth_routes(self):
         status, body = await self._post(

@@ -681,11 +681,6 @@ class McpServer:
                 "session_header": "Mcp-Session-Id",
                 "sse_get_supported": True,
             },
-            "mtproto": {
-                "host": self.config.downstream_host,
-                "port": self.config.mtproto_port,
-                "api_id": self.config.downstream_api_id,
-            },
             "whatsapp": whatsapp,
             "imessage": imessage,
         }

@@ -5,11 +5,8 @@ import asyncio
 
 from .config import ProxyConfig
 from .dashboard_service import ProxyDashboardServer
-from .downstream_auth import DownstreamAuthService
-from .downstream_registry import DownstreamRegistry
 from .imessage_bridge import IMessageBridge
 from .mcp_service import McpServer
-from .mtproto_service import MTProtoProxyServer
 from .secrets_store import MacOSSecretStore
 from .telegram_auth_service import TelegramAuthService
 from .upstream import UpstreamAdapter
@@ -36,15 +33,10 @@ class ProxyService:
             visible_chats_path=config.imessage_visible_chats_path,
         )
         self.telegram_auth = TelegramAuthService(config, self.upstream, secret_store=self.secret_store)
-        self.auth = DownstreamAuthService(config)
-        self.registry = DownstreamRegistry(config.downstream_registry_path)
-        self.mtproto = MTProtoProxyServer(config, self.upstream, self.auth, self.registry)
         self.mcp = McpServer(config, self.upstream, whatsapp=self.whatsapp, imessage=self.imessage)
         self.dashboard = ProxyDashboardServer(
             config,
             self.upstream,
-            self.registry,
-            self.mtproto,
             self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
@@ -59,8 +51,6 @@ class ProxyService:
             await self.whatsapp.start()
         except WhatsAppBridgeError as exc:
             logger.warning("WhatsApp bridge failed to start; continuing without an active bridge: %s", exc)
-        if self.config.mtproto_enabled:
-            await self.mtproto.start()
         await self.mcp.start()
         await self.dashboard.start()
 
@@ -68,7 +58,6 @@ class ProxyService:
         self._stop_event.set()
         await self.dashboard.stop()
         await self.mcp.stop()
-        await self.mtproto.stop()
         await self.telegram_auth.close()
         await self.imessage.close()
         await self.whatsapp.close()

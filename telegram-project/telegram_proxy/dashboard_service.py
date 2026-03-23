@@ -11,50 +11,17 @@ from urllib.parse import parse_qs, urlsplit
 from telethon import utils
 
 from .config import ProxyConfig
-from .downstream_registry import DownstreamRegistry
 from .imessage_bridge import IMessageBridge, IMessageBridgeError
 from .mcp_service import McpServer
-from .mtproto_service import MTProtoProxyServer
 from .secrets_store import MacOSSecretStore
 from .upstream import UpstreamAdapter, UpstreamUnavailableError
 from .whatsapp_bridge import WhatsAppBridge, WhatsAppBridgeError
-
-
-SUPPORTED_APIS = {
-    "forwarded": [
-        "contacts.resolveUsername",
-        "messages.getDialogs",
-        "messages.getPeerDialogs",
-        "messages.getFullChat",
-        "messages.getHistory",
-        "messages.search",
-        "messages.searchGlobal (Cloud-scoped local merge)",
-        "messages.sendMessage",
-        "messages.sendMedia",
-        "messages.readHistory",
-        "messages.deleteMessages",
-        "channels.deleteMessages",
-        "channels.getParticipants",
-        "updates.getDifference",
-    ],
-    "proxy_local": [
-        "auth.sendCode",
-        "auth.signIn",
-        "help.getConfig",
-        "users.getUsers(self)",
-        "updates.getState",
-        "upload.saveFilePart",
-        "upload.saveBigFilePart",
-    ],
-}
 
 class ProxyDashboardServer:
     def __init__(
         self,
         config: ProxyConfig,
         upstream: UpstreamAdapter,
-        registry: DownstreamRegistry,
-        mtproto: MTProtoProxyServer,
         mcp: McpServer,
         telegram_auth=None,
         whatsapp: WhatsAppBridge | None = None,
@@ -63,8 +30,6 @@ class ProxyDashboardServer:
     ) -> None:
         self.config = config
         self.upstream = upstream
-        self.registry = registry
-        self.mtproto = mtproto
         self.mcp = mcp
         self.telegram_auth = telegram_auth
         self.whatsapp = whatsapp
@@ -154,9 +119,6 @@ class ProxyDashboardServer:
             if method == "POST" and url.path == "/api/imessage/enabled":
                 await self._handle_imessage_enabled_post(writer, body)
                 return
-            if method == "POST" and url.path == "/api/mtproto/enabled":
-                await self._handle_mtproto_enabled_post(writer, body)
-                return
             if method == "POST" and url.path == "/api/mcp/config":
                 await self._handle_mcp_config_post(writer, body)
                 return
@@ -181,7 +143,6 @@ class ProxyDashboardServer:
         except (UpstreamUnavailableError, RuntimeError):
             error = "Upstream Telegram connection is not available yet. Use Telegram -> Settings to authorize."
 
-        issued_clients = self.registry.list_clients()
         whatsapp = await self._build_whatsapp_auth()
         imessage = await self._build_imessage_auth()
         return {
@@ -190,27 +151,15 @@ class ProxyDashboardServer:
             "config": {
                 "cloud_folder_name": self.config.cloud_folder_name,
                 "whatsapp_cloud_label_name": self.config.whatsapp_cloud_label_name,
-                "mtproto_enabled": self.config.mtproto_enabled,
-                "mtproto_listening": self.mtproto.is_running,
-                "mtproto_port": self.config.mtproto_port,
-                "downstream_host": self.config.downstream_host,
-                "downstream_api_id": self.config.downstream_api_id,
-                "downstream_session_label": self.config.downstream_session_label,
                 "dashboard_host": self.config.dashboard_host,
                 "dashboard_port": self.config.dashboard_port,
                 "allow_member_listing": self.config.allow_member_listing,
-                "issued_client_count": len(issued_clients),
-                "downstream_api_hash": self.config.downstream_api_hash,
-                "downstream_login_phone": "+15550000000",
-                "downstream_login_code": self.config.downstream_login_code,
                 "imessage_enabled": self.config.imessage_enabled,
                 "upstream_reconnect_min_delay": self.config.upstream_reconnect_min_delay,
                 "upstream_reconnect_max_delay": self.config.upstream_reconnect_max_delay,
                 "imessage_db_path": str(self.config.imessage_db_path),
             },
             "upstream": await self._load_upstream_identity(error is None),
-            "clients": self.mtproto.active_connections_snapshot(),
-            "downstream_credentials": [self._serialize_credential(client) for client in issued_clients],
             "mcp": {
                 "scheme": self.config.mcp_scheme,
                 "host": self.config.mcp_host,
@@ -229,7 +178,6 @@ class ProxyDashboardServer:
             "whatsapp": whatsapp,
             "imessage": imessage,
             "chats": chats,
-            "apis": SUPPORTED_APIS,
         }
 
     async def _build_chat(self, peer_id: int) -> dict[str, object]:
@@ -471,48 +419,6 @@ class ProxyDashboardServer:
 
         await self._write_json(writer, 200, result)
 
-    async def _handle_mtproto_enabled_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
-        try:
-            payload = json.loads(body.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
-            return
-
-        enabled = bool(payload.get("enabled"))
-        if enabled == self.config.mtproto_enabled and self.mtproto.is_running == enabled:
-            await self._write_json(
-                writer,
-                200,
-                {
-                    "ok": True,
-                    "enabled": enabled,
-                    "listening": self.mtproto.is_running,
-                    "message": "MTProto proxy already matches the requested state.",
-                },
-            )
-            return
-
-        try:
-            if enabled:
-                await self.mtproto.start()
-            else:
-                await self.mtproto.stop()
-        except Exception as exc:
-            await self._write_json(writer, 500, {"error": str(exc) or exc.__class__.__name__})
-            return
-
-        self.config.mtproto_enabled = enabled
-        await self._write_json(
-            writer,
-            200,
-            {
-                "ok": True,
-                "enabled": enabled,
-                "listening": self.mtproto.is_running,
-                "message": "MTProto proxy enabled." if enabled else "MTProto proxy disabled.",
-            },
-        )
-
     async def _handle_whatsapp_auth_post(
         self,
         writer: asyncio.StreamWriter,
@@ -720,7 +626,6 @@ class ProxyDashboardServer:
 
         for option in self._detected_interface_options():
             add(option["host"], option["label"], option["interface"])
-        add(self.config.downstream_host, f"Advertised host ({self.config.downstream_host})")
         add(self.config.mcp_host, f"Current MCP host ({self.config.mcp_host})")
         return options
 
@@ -777,13 +682,3 @@ class ProxyDashboardServer:
             return await self.upstream.get_identity()
         except Exception:
             return {"name": "Unavailable", "phone": None, "username": None}
-
-    def _serialize_credential(self, client) -> dict[str, object]:
-        return {
-            "label": client.label,
-            "created_at": client.created_at.isoformat(),
-            "host": client.host,
-            "port": client.port,
-            "phone": client.phone,
-            "session_string": client.session_string,
-        }

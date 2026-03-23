@@ -325,7 +325,7 @@ class IMessageBridge:
         chat = next((item for item in chats if item.get("chat_id") == chat_id), None)
         if chat is None:
             if visible_only:
-                raise IMessageBridgeError(f"iMessage chat is not visible downstream: {chat_id}")
+                raise IMessageBridgeError(f"iMessage chat is not visible through MCP: {chat_id}")
             raise IMessageBridgeError(f"Unknown iMessage chat: {chat_id}")
         try:
             messages = self._query_chat_messages(chat_id, limit)
@@ -355,7 +355,7 @@ class IMessageBridge:
         if not message_text:
             raise IMessageBridgeError("Message text is required")
         if not self._is_visible_chat_id(chat_id):
-            raise IMessageBridgeError(f"iMessage chat is not visible downstream: {chat_id}")
+            raise IMessageBridgeError(f"iMessage chat is not visible through MCP: {chat_id}")
         script = f"""
 tell application "Messages"
   repeat with c in every chat

@@ -622,10 +622,6 @@ h1 {
   align-items: start;
 }
 
-.mtproto-settings-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
 .auth-guide {
   grid-column: 1 / -1;
   background:
@@ -763,10 +759,6 @@ h1 {
 .toggle-row input:focus-visible + .toggle-box {
   outline: 2px solid rgba(54, 101, 166, 0.22);
   outline-offset: 2px;
-}
-
-.mtproto-credentials-card {
-  grid-column: 1 / -1;
 }
 
 .field input {

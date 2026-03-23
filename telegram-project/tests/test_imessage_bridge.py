@@ -120,7 +120,7 @@ class IMessageBridgeTests(unittest.TestCase):
 
         self.assertEqual([chat["chat_id"] for chat in payload["chats"]], ["chat-a"])
 
-    def test_get_chat_blocks_hidden_downstream_chats(self):
+    def test_get_chat_blocks_hidden_mcp_chats(self):
         self.bridge._visible_chat_ids = {"chat-a"}
         chats = [
             {"chat_id": "chat-a", "title": "Alpha"},

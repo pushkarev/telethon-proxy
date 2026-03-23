@@ -239,9 +239,6 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             mcp_host="127.0.0.1",
             mcp_port=0,
             mcp_token="test-token",
-            downstream_host="100.92.237.54",
-            mtproto_port=9001,
-            downstream_api_id=900000,
             imessage_enabled=True,
         )
         self.server = McpServer(self.config, _FakeUpstream(), whatsapp=_FakeWhatsApp(), imessage=_FakeIMessage())

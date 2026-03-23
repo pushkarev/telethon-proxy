@@ -397,7 +397,6 @@ async function loadOverview() {
 
   renderOverview(data);
   renderChats(data.chats);
-  renderApis(data.apis);
   renderTelegramAuth(data.telegram_auth);
   renderWhatsAppAuth(data.whatsapp);
   renderIMessageAuth(data.imessage);
@@ -485,23 +484,6 @@ function renderOverview(data) {
     !imessageAuth.enabled ? "Off" : (imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed")),
   );
   syncConnectionChecks({ telegramAuth, whatsappAuth, imessageAuth });
-
-  setHtml("configGrid", [
-    ["Telegram Cloud folder", data.config.cloud_folder_name],
-    ["WhatsApp Cloud label", data.config.whatsapp_cloud_label_name || "Cloud"],
-    ["Messages history DB", data.config.imessage_db_path || "default"],
-    ["Background API", `${data.config.dashboard_host}:${data.config.dashboard_port}`],
-    ["MCP endpoint", data.mcp.endpoint || `${String(data.mcp.scheme || "http").toLowerCase()}://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
-    ["Reconnect backoff", `${data.config.upstream_reconnect_min_delay}s -> ${data.config.upstream_reconnect_max_delay}s`],
-    ["Allow member listing", data.config.allow_member_listing ? "yes" : "no"],
-  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
-
-  setHtml("upstreamGrid", [
-    ["Name", data.upstream.name || "unknown"],
-    ["Phone", data.upstream.phone || "unknown"],
-    ["Username", data.upstream.username ? "@" + data.upstream.username : "none"],
-  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
-  renderMtprotoControls(data);
 
   const mcpScheme = String(data.mcp.scheme || "http").toLowerCase() === "https" ? "https" : "http";
   const mcpEndpoint = data.mcp.endpoint || `${mcpScheme}://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`;
@@ -618,79 +600,6 @@ function renderOverview(data) {
   }
 }
 
-function renderMtprotoControls(data) {
-  const enabled = Boolean(data.config.mtproto_enabled);
-  const listening = Boolean(data.config.mtproto_listening);
-  const issuedSessions = Array.isArray(data.downstream_credentials) ? data.downstream_credentials : [];
-  const activeClients = Array.isArray(data.clients) ? data.clients : [];
-
-  el("mtprotoStatusCard").innerHTML = `
-    <div class="row">
-      <div class="title">MTProto status</div>
-      <span class="pill">${enabled ? (listening ? "enabled" : "starting") : "disabled"}</span>
-    </div>
-    <div class="kv">
-      <div>Endpoint</div><div>${esc(`${data.config.downstream_host}:${data.config.mtproto_port}`)}</div>
-      <div>Listener</div><div>${listening ? "listening" : "offline"}</div>
-      <div>Issued sessions</div><div>${esc(issuedSessions.length)}</div>
-      <div>Live clients</div><div>${esc(activeClients.length)}</div>
-      <div>Proxy session label</div><div>${esc(data.config.downstream_session_label)}</div>
-      <div>Member listing</div><div>${data.config.allow_member_listing ? "allowed" : "disabled"}</div>
-    </div>
-    ${activeClients.length
-      ? `<div class="meta">Connected: ${esc(activeClients.map((client) => client.label).join(", "))}</div>`
-      : `<div class="meta">No downstream MTProto clients are currently connected.</div>`}
-  `;
-
-  el("mtprotoTogglePill").textContent = enabled ? (listening ? "Enabled" : "Starting") : "Disabled";
-  el("mtprotoToggleMeta").textContent = enabled
-    ? "Downstream Telegram clients can connect through the local MTProto listener."
-    : "The MTProto listener is off. Enable it to reveal the downstream client credentials.";
-
-  const checkbox = el("mtprotoEnabledCheckbox");
-  checkbox.checked = enabled;
-
-  el("mtprotoCredentialsCard").innerHTML = enabled
-    ? `
-        <div class="row">
-          <div class="title">Downstream client credentials</div>
-          <span class="pill">Needed by clients</span>
-        </div>
-        <div class="kv">
-          <div>Host</div><div>${esc(data.config.downstream_host)}</div>
-          <div>Port</div><div>${esc(data.config.mtproto_port)}</div>
-          <div>API ID</div><div>${esc(data.config.downstream_api_id)}</div>
-          <div>API Hash</div><div>${esc(data.config.downstream_api_hash)}</div>
-          <div>Proxy phone</div><div>${esc(data.config.downstream_login_phone)}</div>
-          <div>Proxy code</div><div>${esc(data.config.downstream_login_code)}</div>
-        </div>
-        <div class="meta">Use these values in downstream Telethon-compatible clients, along with one of the issued session strings below.</div>
-        <div class="client-list">
-          ${issuedSessions.length
-            ? issuedSessions.map((cred) => `
-                <div class="credential-card">
-                  <div class="row">
-                    <div class="title">${esc(cred.label)}</div>
-                    <span class="pill">${cred.phone ? "authorized" : "issued"}</span>
-                  </div>
-                  <div class="meta">Created ${esc(fmtDate(cred.created_at))}${cred.phone ? `<br />Bound phone ${esc(cred.phone)}` : ""}</div>
-                  ${cred.session_string
-                    ? `<textarea class="credential-session" readonly>${esc(cred.session_string)}</textarea>`
-                    : `<div class="empty">Session string was not retained for this issued client.</div>`}
-                </div>
-              `).join("")
-            : '<div class="empty">No downstream client credentials have been issued yet.</div>'}
-        </div>
-      `
-    : `
-        <div class="row">
-          <div class="title">Downstream client credentials</div>
-          <span class="pill">Hidden while disabled</span>
-        </div>
-        <div class="empty">Enable MTProto to reveal the endpoint details and issued session strings for downstream Telegram clients.</div>
-      `;
-}
-
 function renderChats(chats) {
   if (!chats.length) {
     selectedPeerId = null;
@@ -775,11 +684,11 @@ function renderIMessageChats(listId, chats, {
                     <input
                       type="checkbox"
                       data-chat-visibility="${esc(chat.chat_id)}"
-                      aria-label="Visible downstream"
-                      title="Visible downstream"
+                      aria-label="Visible through MCP"
+                      title="Visible through MCP"
                       ${visibleSet.has(chat.chat_id) ? " checked" : ""}
                     />
-                    ${compact ? "" : "<span>Downstream</span>"}
+                    ${compact ? "" : "<span>Visible via MCP</span>"}
                   </label>`
                 : ""}
               ${compact ? "" : `<span class="pill">${esc(chat.kind)}</span>`}
@@ -812,7 +721,7 @@ function renderIMessageChats(listId, chats, {
       try {
         await setIMessageChatVisibility(target.dataset.chatVisibility, target.checked);
       } catch (error) {
-        setNotice(error.message || "Could not update Messages downstream visibility.", "error");
+        setNotice(error.message || "Could not update Messages MCP visibility.", "error");
       } finally {
         target.disabled = false;
       }
@@ -831,7 +740,7 @@ function renderIMessageViews() {
     compact: true,
   });
   renderIMessageChats("imessageVisibleChatList", visibleChats, {
-    emptyText: "No Messages chats are currently passed downstream.",
+    emptyText: "No Messages chats are currently visible through MCP.",
     visibleChatIds,
     compact: true,
   });
@@ -1013,8 +922,8 @@ async function setIMessageChatVisibility(chatId, visible) {
   await loadOverview();
   setNotice(
     visible
-      ? "Messages chat is now visible downstream."
-      : "Messages chat was removed from downstream visibility.",
+      ? "Messages chat is now visible through MCP."
+      : "Messages chat was removed from MCP visibility.",
     "success",
   );
 }
@@ -1039,17 +948,12 @@ async function syncIMessageSelectionForActivePane() {
     el("imessageMessageHeading").textContent = "Messages";
     el("imessageChatKindPill").textContent = "chat";
     el("imessageChatScreenMeta").textContent = activeIMessagePane === "visible-chats"
-      ? "Choose a downstream-visible Messages chat to inspect recent local history."
+      ? "Choose a Messages chat that is visible through MCP to inspect recent local history."
       : "Pick a Messages chat to inspect recent local history.";
     el("imessageMessageList").innerHTML = activeIMessagePane === "visible-chats"
-      ? '<div class="empty">No Messages chats are currently passed downstream.</div>'
+      ? '<div class="empty">No Messages chats are currently visible through MCP.</div>'
       : '<div class="empty">No Messages chat is selected yet.</div>';
   }
-}
-
-function renderApis(apis) {
-  el("forwardedApis").innerHTML = apis.forwarded.map((name) => `<div class="api"><code>${esc(name)}</code></div>`).join("");
-  el("localApis").innerHTML = apis.proxy_local.map((name) => `<div class="api"><code>${esc(name)}</code></div>`).join("");
 }
 
 function renderTelegramAuth(state) {
@@ -1214,7 +1118,7 @@ function renderIMessageAuth(state) {
     </div>
     ${accounts.length ? `<div class="meta">Messages accounts: ${esc(accounts.map((account) => `${account.description || account.id}${account.service_type ? ` (${account.service_type})` : ""}`).join(", "))}</div>` : ""}
     ${imessageAuthState.automation_hint ? `<div class="meta">${esc(imessageAuthState.automation_hint)}</div>` : ""}
-    <div class="meta">Use <strong>All chats</strong> to choose which local threads should be passed downstream. Only <strong>Visible chats</strong> are exposed through MCP.</div>
+    <div class="meta">Use <strong>All chats</strong> to choose which local threads should be visible through MCP. Only <strong>Visible chats</strong> are exposed there.</div>
     ${!imessageAuthState.database_accessible ? `
       <div class="inline-notice">
         Messages history is unavailable because Telethon Proxy cannot read <span class="mono">chat.db</span> yet.
@@ -1414,12 +1318,6 @@ async function clearWhatsAppSession() {
   await loadOverview();
 }
 
-async function setMtprotoEnabled(enabled) {
-  const result = await postJson("/api/mtproto/enabled", { enabled });
-  setNotice(result.message || "MTProto proxy updated.", "success");
-  await loadOverview();
-}
-
 async function setIMessageEnabled(enabled) {
   const result = await postJson("/api/imessage/enabled", { enabled });
   if (enabled) {
@@ -1484,19 +1382,6 @@ el("whatsappPairingForm").addEventListener("submit", (event) => {
 
 el("whatsappLogoutButton").addEventListener("click", () => {
   clearWhatsAppSession().catch((error) => setNotice(error.message || String(error), "error"));
-});
-
-el("mtprotoEnabledCheckbox").addEventListener("change", async (event) => {
-  const checkbox = event.currentTarget;
-  checkbox.disabled = true;
-  try {
-    await setMtprotoEnabled(checkbox.checked);
-  } catch (error) {
-    setNotice(error.message || String(error), "error");
-    await loadOverview().catch(() => {});
-  } finally {
-    checkbox.disabled = false;
-  }
 });
 
 loadDesktopRuntime()
