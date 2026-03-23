@@ -21,6 +21,7 @@
   "build": {
     "appId": "dev.telethon.proxy",
     "productName": "Telethon Proxy",
+    "afterSign": "electron/notarize.mjs",
     "files": [
       "electron/**/*",
       "telegram-project/webui/**/*",
@@ -31,6 +32,11 @@
       "output": "dist/electron"
     },
     "mac": {
+      "identity": "Developer ID Application",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
         "LSUIElement": true
       },

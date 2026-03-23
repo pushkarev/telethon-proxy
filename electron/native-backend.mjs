@@ -1369,6 +1369,7 @@ export class NativeAppBackend {
 
   async getWhatsAppChat(jid) {
     try {
+      await this.whatsapp.ensureChatHistory(jid, 80);
       const chats = (await this.whatsapp.authStatus()).chats || [];
       return {
         ok: true,

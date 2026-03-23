@@ -795,6 +795,7 @@ function renderMessageTimeline(messages, {
   kindId,
   metaId,
   listId,
+  emptyText,
   fallbackHeading,
   fallbackKind,
   fallbackMeta,
@@ -807,7 +808,7 @@ function renderMessageTimeline(messages, {
   el(metaId).innerHTML = meta || fallbackMeta;
 
   if (!messages.length) {
-    el(listId).innerHTML = '<div class="empty">No recent messages were returned for this chat.</div>';
+    el(listId).innerHTML = `<div class="empty">${esc(emptyText || "No recent messages were returned for this chat.")}</div>`;
     return;
   }
 
@@ -901,6 +902,9 @@ async function loadWhatsAppChat(jid) {
     kindId: "whatsappChatKindPill",
     metaId: "whatsappChatScreenMeta",
     listId: "whatsappMessageList",
+    emptyText: data.chat
+      ? "This WhatsApp chat has not synced any recent history to this device yet."
+      : "No WhatsApp chat is selected yet.",
     fallbackHeading: "Messages",
     fallbackKind: "chat",
     fallbackMeta: "Scan the QR and label chats with Cloud to inspect recent history.",

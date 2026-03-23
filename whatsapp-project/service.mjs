@@ -8,8 +8,12 @@ import QRCode from "qrcode";
 import makeWASocket, {
   ALL_WA_PATCH_NAMES,
   Browsers,
+  decodePatches,
+  decodeSyncdSnapshot,
   DisconnectReason,
+  extractSyncdPatches,
   fetchLatestBaileysVersion,
+  newLTHashState,
   useMultiFileAuthState,
 } from "@whiskeysockets/baileys";
 
@@ -20,9 +24,15 @@ const AUTH_DIR = path.resolve(
   process.env.TP_WHATSAPP_AUTH_DIR || path.join(process.env.HOME || process.cwd(), ".tlt-proxy", "whatsapp-auth"),
 );
 const LABEL_STATE_NAME = "label-state.json";
+const BRIDGE_STATE_NAME = "bridge-state.json";
 const MAX_CHAT_MESSAGES = 200;
 const MAX_UPDATES = 500;
 const RECONNECT_DELAY_MS = 2_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 25_000;
+const HISTORY_FETCH_TIMEOUT_MS = 7_000;
+const STATE_FLUSH_DELAY_MS = 250;
+const HISTORY_ANCHOR_COLLECTIONS = ["regular", "regular_high", "regular_low"];
 function nowIso() {
   return new Date().toISOString();
 }
@@ -42,6 +52,30 @@ function timestampToIso(value) {
     return new Date(numeric * 1000).toISOString();
   }
   return null;
+}
+
+function timestampToMs(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return value > 1e12 ? value : value * 1000;
+  }
+  if (typeof value === "object" && typeof value.toNumber === "function") {
+    const numeric = value.toNumber();
+    return numeric > 1e12 ? numeric : numeric * 1000;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric > 1e12 ? numeric : numeric * 1000;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function jidKind(jid) {
@@ -156,12 +190,18 @@ export class WhatsAppBridgeService {
     this.chatLabels = new Map();
     this.lidToPn = new Map();
     this.pnToLid = new Map();
+    this.historyAnchors = new Map();
     this.recentUpdates = [];
     this.loadedPersistedLabelState = false;
+    this.persistStateTimer = null;
+    this.connectWatchdogTimer = null;
+    this.reconnectAttempts = 0;
+    this.historyAnchorRefreshPromise = null;
   }
 
   async start() {
     await fs.mkdir(this.authDir, { recursive: true });
+    await this._loadPersistedBridgeState();
     await this._loadPersistedLabelState();
     await this._connect();
     if (!this.listen) {
@@ -182,9 +222,12 @@ export class WhatsAppBridgeService {
 
   async stop() {
     this.stopping = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    this._cancelReconnectTimer();
+    this._clearConnectWatchdog();
+    if (this.persistStateTimer) {
+      clearTimeout(this.persistStateTimer);
+      this.persistStateTimer = null;
+      await this._savePersistedBridgeState();
     }
     if (this.server) {
       await new Promise((resolve) => this.server.close(resolve));
@@ -204,6 +247,15 @@ export class WhatsAppBridgeService {
     if (this.stopping) {
       return;
     }
+    this._clearConnectWatchdog();
+    if (this.sock) {
+      try {
+        this.sock.end(undefined);
+      } catch {
+        // ignore stale socket shutdown errors
+      }
+      this.sock = null;
+    }
     const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({
@@ -218,7 +270,9 @@ export class WhatsAppBridgeService {
     this.saveCreds = saveCreds;
     this.registered = Boolean(sock.authState?.creds?.registered);
     this.connection = "connecting";
+    this.connected = false;
     this.lastError = null;
+    this._armConnectWatchdog(sock);
     await this._seedChatsFromPersistedMappings(sock.authState?.creds);
 
     sock.ev.on("creds.update", async () => {
@@ -259,6 +313,8 @@ export class WhatsAppBridgeService {
       this.connected = update.connection === "open";
     }
     if (update.connection === "open") {
+      this._clearConnectWatchdog();
+      this._resetReconnectState();
       this.me = sock.user
         ? {
             id: sock.user.id || null,
@@ -278,6 +334,10 @@ export class WhatsAppBridgeService {
         if (!this.loadedPersistedLabelState && this.labels.size === 0 && this.chatLabels.size === 0) {
           await this._rebuildLabelStateFromScratch(sock);
         }
+        await this._ensureHistoryAnchors({
+          sock,
+          forceSnapshot: this.historyAnchors.size === 0,
+        });
       } catch (error) {
         this.lastError = error?.message || String(error);
       }
@@ -286,9 +346,14 @@ export class WhatsAppBridgeService {
       return;
     }
     if (update.connection === "close") {
+      this._clearConnectWatchdog();
       this.connected = false;
+      if (this.sock === sock) {
+        this.sock = null;
+      }
       const statusCode = update.lastDisconnect?.error?.output?.statusCode;
       if (statusCode === DisconnectReason.loggedOut) {
+        this._resetReconnectState();
         this.registered = false;
         this.me = null;
         this.lastError = "WhatsApp session logged out. Scan the next QR code to sign in again.";
@@ -299,10 +364,56 @@ export class WhatsAppBridgeService {
     }
   }
 
+  _cancelReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  _clearConnectWatchdog() {
+    if (this.connectWatchdogTimer) {
+      clearTimeout(this.connectWatchdogTimer);
+      this.connectWatchdogTimer = null;
+    }
+  }
+
+  _resetReconnectState() {
+    this.reconnectAttempts = 0;
+    this._cancelReconnectTimer();
+  }
+
+  _nextReconnectDelayMs() {
+    return Math.min(RECONNECT_DELAY_MS * (2 ** this.reconnectAttempts), MAX_RECONNECT_DELAY_MS);
+  }
+
+  _armConnectWatchdog(sock) {
+    this._clearConnectWatchdog();
+    this.connectWatchdogTimer = setTimeout(() => {
+      this.connectWatchdogTimer = null;
+      if (this.stopping || this.sock !== sock || this.connected) {
+        return;
+      }
+      this.lastError = "WhatsApp connection timed out. Retrying.";
+      this.connection = "close";
+      try {
+        sock.end(undefined);
+      } catch {
+        // ignore forced reconnect shutdown errors
+      }
+      if (this.sock === sock) {
+        this.sock = null;
+      }
+      this._scheduleReconnect();
+    }, CONNECT_TIMEOUT_MS);
+  }
+
   _scheduleReconnect() {
     if (this.stopping || this.reconnectTimer) {
       return;
     }
+    const delayMs = this._nextReconnectDelayMs();
+    this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       try {
@@ -311,7 +422,7 @@ export class WhatsAppBridgeService {
         this.lastError = error?.message || String(error);
         this._scheduleReconnect();
       }
-    }, RECONNECT_DELAY_MS);
+    }, delayMs);
   }
 
   _onHistorySync(event) {
@@ -333,6 +444,7 @@ export class WhatsAppBridgeService {
         name: firstDefined(contact?.name, contact?.notify, contact?.verifiedName, contact?.pushName),
       });
     }
+    this._schedulePersistedStateSave();
   }
 
   _onChats(chats) {
@@ -341,6 +453,18 @@ export class WhatsAppBridgeService {
       if (!jid) {
         continue;
       }
+      const historyMessages = this._extractChatMessages(chat);
+      for (const message of historyMessages) {
+        const normalized = {
+          ...message,
+          key: {
+            ...message?.key,
+            remoteJid: message?.key?.remoteJid || jid,
+          },
+        };
+        this._upsertMessage(normalized, false);
+      }
+      const latestHistoryMessage = this._mergedChatMessages(jid).at(-1) || null;
       const existing = this.chats.get(jid) || { jid };
       const next = {
         ...existing,
@@ -349,13 +473,19 @@ export class WhatsAppBridgeService {
         unreadCount: Number.isFinite(chat?.unreadCount) ? chat.unreadCount : existing.unreadCount || 0,
         archived: typeof chat?.archive === "boolean" ? chat.archive : existing.archived || false,
         lastMessageAt: firstDefined(
+          latestHistoryMessage?.date,
           timestampToIso(chat?.conversationTimestamp),
           timestampToIso(chat?.lastMessageRecvTimestamp),
           existing.lastMessageAt,
         ),
+        lastMessageText: firstDefined(
+          latestHistoryMessage?.text,
+          existing.lastMessageText,
+        ),
       };
       this.chats.set(jid, next);
     }
+    this._schedulePersistedStateSave();
   }
 
   _onChatsDelete(jids) {
@@ -364,6 +494,7 @@ export class WhatsAppBridgeService {
       this.messages.delete(jid);
       this.chatLabels.delete(jid);
     }
+    this._schedulePersistedStateSave();
     void this._savePersistedLabelState();
   }
 
@@ -371,6 +502,7 @@ export class WhatsAppBridgeService {
     for (const message of event?.messages || []) {
       this._upsertMessage(message, true);
     }
+    this._schedulePersistedStateSave();
   }
 
   _onMessagesUpdate(updates) {
@@ -391,6 +523,7 @@ export class WhatsAppBridgeService {
       };
       this.messages.set(jid, entries);
     }
+    this._schedulePersistedStateSave();
   }
 
   _onMessagesDelete(event) {
@@ -407,6 +540,7 @@ export class WhatsAppBridgeService {
       const entries = (this.messages.get(jid) || []).filter((entry) => entry.id !== messageId);
       this.messages.set(jid, entries);
     }
+    this._schedulePersistedStateSave();
   }
 
   _onLabelEdit(label) {
@@ -484,6 +618,304 @@ export class WhatsAppBridgeService {
     return path.join(this.authDir, LABEL_STATE_NAME);
   }
 
+  _bridgeStatePath() {
+    return path.join(this.authDir, BRIDGE_STATE_NAME);
+  }
+
+  _serializeBridgeState() {
+    return {
+      contacts: [...this.contacts.values()],
+      chats: [...this.chats.values()],
+      messages: [...this.messages.entries()],
+      lid_to_pn: [...this.lidToPn.entries()],
+      pn_to_lid: [...this.pnToLid.entries()],
+      history_anchors: [...this.historyAnchors.entries()],
+    };
+  }
+
+  async _loadPersistedBridgeState() {
+    try {
+      const raw = await fs.readFile(this._bridgeStatePath(), "utf-8");
+      const payload = JSON.parse(raw);
+      this.contacts.clear();
+      this.chats.clear();
+      this.messages.clear();
+      this.lidToPn.clear();
+      this.pnToLid.clear();
+      this.historyAnchors.clear();
+      for (const contact of payload?.contacts || []) {
+        if (!contact?.id) continue;
+        this.contacts.set(contact.id, contact);
+      }
+      for (const chat of payload?.chats || []) {
+        if (!chat?.jid) continue;
+        this.chats.set(chat.jid, chat);
+      }
+      for (const [jid, messages] of payload?.messages || []) {
+        if (!jid || !Array.isArray(messages)) continue;
+        this.messages.set(jid, messages);
+      }
+      for (const [lidUser, pnUser] of payload?.lid_to_pn || []) {
+        if (!lidUser || !pnUser) continue;
+        this.lidToPn.set(String(lidUser), String(pnUser));
+      }
+      for (const [pnUser, lidUser] of payload?.pn_to_lid || []) {
+        if (!pnUser || !lidUser) continue;
+        this.pnToLid.set(String(pnUser), String(lidUser));
+      }
+      for (const [jid, anchor] of payload?.history_anchors || []) {
+        if (!jid || !anchor?.key?.id) continue;
+        this.historyAnchors.set(String(jid), {
+          key: {
+            ...anchor.key,
+            remoteJid: anchor.key.remoteJid || String(jid),
+          },
+          oldestMsgTimestampMs: Number(anchor.oldestMsgTimestampMs || 0) || null,
+        });
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        this.lastError = error?.message || String(error);
+      }
+    }
+  }
+
+  async _savePersistedBridgeState() {
+    await fs.mkdir(this.authDir, { recursive: true });
+    await fs.writeFile(this._bridgeStatePath(), JSON.stringify(this._serializeBridgeState()), "utf-8");
+  }
+
+  _schedulePersistedStateSave() {
+    if (this.persistStateTimer) {
+      clearTimeout(this.persistStateTimer);
+    }
+    this.persistStateTimer = setTimeout(() => {
+      this.persistStateTimer = null;
+      void this._savePersistedBridgeState();
+    }, STATE_FLUSH_DELAY_MS);
+  }
+
+  async _ensureHistoryAnchors({ sock = this.sock, forceSnapshot = false } = {}) {
+    if (!sock) {
+      return;
+    }
+    if (!forceSnapshot && this.historyAnchors.size > 0) {
+      return;
+    }
+    if (this.historyAnchorRefreshPromise) {
+      return this.historyAnchorRefreshPromise;
+    }
+    this.historyAnchorRefreshPromise = this._refreshHistoryAnchors(sock, { forceSnapshot })
+      .finally(() => {
+        this.historyAnchorRefreshPromise = null;
+      });
+    return this.historyAnchorRefreshPromise;
+  }
+
+  async _refreshHistoryAnchors(sock, { forceSnapshot = false } = {}) {
+    if (!sock?.authState?.keys || typeof sock.query !== "function") {
+      return;
+    }
+    const authState = sock.authState;
+    const initialVersionMap = {};
+    const globalMutationMap = {};
+    const getAppStateSyncKey = async (keyId) => {
+      const result = await authState.keys.get("app-state-sync-key", [keyId]);
+      return result[keyId];
+    };
+
+    await authState.keys.transaction(async () => {
+      if (forceSnapshot) {
+        await authState.keys.set({
+          "app-state-sync-version": Object.fromEntries(HISTORY_ANCHOR_COLLECTIONS.map((name) => [name, null])),
+        });
+      }
+      const collectionsToHandle = new Set(HISTORY_ANCHOR_COLLECTIONS);
+      while (collectionsToHandle.size) {
+        const states = {};
+        const nodes = [];
+        for (const name of collectionsToHandle) {
+          const result = await authState.keys.get("app-state-sync-version", [name]);
+          let state = result[name];
+          if (state) {
+            if (typeof initialVersionMap[name] === "undefined") {
+              initialVersionMap[name] = state.version;
+            }
+          } else {
+            state = newLTHashState();
+          }
+          states[name] = state;
+          nodes.push({
+            tag: "collection",
+            attrs: {
+              name,
+              version: state.version.toString(),
+              return_snapshot: (!state.version).toString(),
+            },
+          });
+        }
+        const result = await sock.query({
+          tag: "iq",
+          attrs: {
+            to: "s.whatsapp.net",
+            xmlns: "w:sync:app:state",
+            type: "set",
+          },
+          content: [
+            {
+              tag: "sync",
+              attrs: {},
+              content: nodes,
+            },
+          ],
+        });
+        const decoded = await extractSyncdPatches(result, sock?.options);
+        for (const name of Object.keys(decoded)) {
+          const { patches, hasMorePatches, snapshot } = decoded[name];
+          if (snapshot) {
+            const { state: newState, mutationMap } = await decodeSyncdSnapshot(
+              name,
+              snapshot,
+              getAppStateSyncKey,
+              initialVersionMap[name],
+              { value: false, hash: false },
+            );
+            states[name] = newState;
+            Object.assign(globalMutationMap, mutationMap);
+            await authState.keys.set({ "app-state-sync-version": { [name]: newState } });
+          }
+          if (patches.length) {
+            const { state: newState, mutationMap } = await decodePatches(
+              name,
+              patches,
+              states[name],
+              getAppStateSyncKey,
+              sock?.options,
+              initialVersionMap[name],
+              undefined,
+              { value: false, hash: false },
+            );
+            Object.assign(globalMutationMap, mutationMap);
+            await authState.keys.set({ "app-state-sync-version": { [name]: newState } });
+          }
+          if (!hasMorePatches) {
+            collectionsToHandle.delete(name);
+          }
+        }
+      }
+    }, authState?.creds?.me?.id || "refresh-history-anchors");
+
+    for (const mutation of Object.values(globalMutationMap)) {
+      const index = mutation?.index || mutation?.syncAction?.index;
+      const action = mutation?.syncAction?.value;
+      const chatJid = Array.isArray(index) ? index[1] : null;
+      const messageRange = action?.archiveChatAction?.messageRange || action?.markChatAsReadAction?.messageRange;
+      if (!chatJid || !messageRange) {
+        continue;
+      }
+      this._recordHistoryRange(chatJid, messageRange);
+    }
+    this._schedulePersistedStateSave();
+  }
+
+  _recordHistoryRange(chatJid, messageRange) {
+    if (!chatJid || !messageRange) {
+      return;
+    }
+    const messages = Array.isArray(messageRange.messages) ? messageRange.messages : [];
+    const rangeTimestampIso = timestampToIso(
+      messageRange.lastMessageTimestamp || messageRange.lastSystemMessageTimestamp,
+    );
+    for (const rawMessage of messages) {
+      const normalized = {
+        ...rawMessage,
+        key: {
+          ...rawMessage?.key,
+          remoteJid: rawMessage?.key?.remoteJid || chatJid,
+        },
+        messageTimestamp: rawMessage?.messageTimestamp || messageRange.lastMessageTimestamp || messageRange.lastSystemMessageTimestamp || undefined,
+      };
+      if (normalized.message) {
+        this._upsertMessage(normalized, false);
+      }
+    }
+
+    const anchorSource = messages.at(-1) || messages[0] || null;
+    const anchorKey = anchorSource?.key?.id
+      ? {
+          ...anchorSource.key,
+          remoteJid: anchorSource.key.remoteJid || chatJid,
+        }
+      : null;
+    const anchorTimestampMs = timestampToMs(
+      anchorSource?.messageTimestamp || messageRange.lastMessageTimestamp || messageRange.lastSystemMessageTimestamp,
+    );
+    if (!anchorKey || !anchorTimestampMs) {
+      return;
+    }
+    const existingChat = this.chats.get(chatJid) || { jid: chatJid };
+    this.chats.set(chatJid, {
+      ...existingChat,
+      jid: chatJid,
+      name: existingChat.name || this.contacts.get(chatJid)?.name || displayTitleFromJid(chatJid),
+      unreadCount: existingChat.unreadCount || 0,
+      archived: Boolean(existingChat.archived),
+      lastMessageAt: existingChat.lastMessageAt || rangeTimestampIso || null,
+      lastMessageText: existingChat.lastMessageText || null,
+    });
+    this.historyAnchors.set(chatJid, {
+      key: anchorKey,
+      oldestMsgTimestampMs: anchorTimestampMs,
+    });
+  }
+
+  _historyAnchorForChat(jid) {
+    for (const candidate of this._chatAliasJids(jid)) {
+      const anchor = this.historyAnchors.get(candidate);
+      if (anchor?.key?.id && anchor.oldestMsgTimestampMs) {
+        return anchor;
+      }
+    }
+    return null;
+  }
+
+  async ensureChatHistory(jid, limit = 50) {
+    if (!this._isAllowedChat(jid)) {
+      throw new Error(`Blocked access to WhatsApp chat outside ${CLOUD_LABEL_NAME} label`);
+    }
+    const existingMessages = this._mergedChatMessages(jid);
+    if (existingMessages.length > 0) {
+      return existingMessages.slice(-limit);
+    }
+    if (!this.sock || !this.connected) {
+      return [];
+    }
+
+    let anchor = this._historyAnchorForChat(jid);
+    if (!anchor) {
+      await this._ensureHistoryAnchors({
+        sock: this.sock,
+        forceSnapshot: true,
+      });
+      anchor = this._historyAnchorForChat(jid);
+    }
+    if (!anchor) {
+      return [];
+    }
+
+    const beforeCount = this._mergedChatMessages(jid).length;
+    await this.sock.fetchMessageHistory(Math.min(Math.max(limit, 1), 50), anchor.key, anchor.oldestMsgTimestampMs);
+    const deadline = Date.now() + HISTORY_FETCH_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const messages = this._mergedChatMessages(jid);
+      if (messages.length > beforeCount) {
+        return messages.slice(-limit);
+      }
+      await sleep(200);
+    }
+    return this._mergedChatMessages(jid).slice(-limit);
+  }
+
   _serializeLabelState() {
     return {
       labels: [...this.labels.values()],
@@ -530,6 +962,18 @@ export class WhatsAppBridgeService {
 
   async _savePersistedLabelState() {
     await fs.mkdir(this.authDir, { recursive: true });
+    if (this.labels.size === 0 && this.chatLabels.size === 0) {
+      try {
+        const raw = await fs.readFile(this._labelStatePath(), "utf-8");
+        const payload = JSON.parse(raw);
+        if ((payload?.labels || []).length > 0 || (payload?.chat_labels || []).length > 0) {
+          this.loadedPersistedLabelState = true;
+          return;
+        }
+      } catch {
+        // no prior label state to preserve
+      }
+    }
     await fs.writeFile(this._labelStatePath(), JSON.stringify(this._serializeLabelState()), "utf-8");
     this.loadedPersistedLabelState = this.labels.size > 0 || this.chatLabels.size > 0;
   }
@@ -575,6 +1019,7 @@ export class WhatsAppBridgeService {
       lastMessageAt: serialized.date || existingChat.lastMessageAt || null,
       lastMessageText: serialized.text || existingChat.lastMessageText || null,
     });
+    this._schedulePersistedStateSave();
 
     if (pushUpdate) {
       this._pushRecentUpdate({
@@ -673,6 +1118,7 @@ export class WhatsAppBridgeService {
         lastMessageText: existing.lastMessageText || null,
       });
     }
+    this._schedulePersistedStateSave();
   }
 
   _isAllowedChat(jid) {
@@ -748,11 +1194,43 @@ export class WhatsAppBridgeService {
     return chats.slice(0, limit);
   }
 
+  _extractChatMessages(chat) {
+    const lastMessages = chat?.lastMessages;
+    if (Array.isArray(lastMessages)) {
+      return lastMessages;
+    }
+    if (Array.isArray(lastMessages?.messages)) {
+      return lastMessages.messages;
+    }
+    return [];
+  }
+
+  _mergedChatMessages(jid) {
+    const merged = new Map();
+    for (const candidate of this._chatAliasJids(jid)) {
+      for (const message of this.messages.get(candidate) || []) {
+        if (!message?.id) {
+          continue;
+        }
+        const key = `${message.chat_id || candidate}:${message.id}`;
+        merged.set(key, message);
+      }
+    }
+    return [...merged.values()].sort((left, right) => {
+      const leftTs = Date.parse(left.date || 0);
+      const rightTs = Date.parse(right.date || 0);
+      if (leftTs !== rightTs) {
+        return leftTs - rightTs;
+      }
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
+  }
+
   _chatMessages(jid, limit = 50) {
     if (!this._isAllowedChat(jid)) {
       throw new Error(`Blocked access to WhatsApp chat outside ${CLOUD_LABEL_NAME} label`);
     }
-    const messages = this.messages.get(jid) || [];
+    const messages = this._mergedChatMessages(jid);
     return messages.slice(-limit);
   }
 
@@ -813,6 +1291,7 @@ export class WhatsAppBridgeService {
     this.labels.clear();
     this.chatLabels.clear();
     this.recentUpdates = [];
+    await fs.rm(this._bridgeStatePath(), { force: true });
     await this._connect();
     return this._status();
   }

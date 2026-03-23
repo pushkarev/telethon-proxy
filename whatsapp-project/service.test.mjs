@@ -122,3 +122,267 @@ test("bridge matches Cloud chat labels across lid and phone-number JIDs", () => 
   assert.deepEqual(service._allowedChats(10).map((chat) => chat.jid), ["628213441512@s.whatsapp.net"]);
   assert.deepEqual(service._allowedChats(10)[0].labels, ["Cloud"]);
 });
+
+test("bridge returns history for canonical chats when messages were stored under alias JIDs", () => {
+  const service = new WhatsAppBridgeService();
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.pnToLid.set("628213441512", "116063589130297");
+  service.lidToPn.set("116063589130297", "628213441512");
+  service.chatLabels.set("116063589130297@lid", new Set(["cloud-id"]));
+  service.chats.set("628213441512@s.whatsapp.net", {
+    jid: "628213441512@s.whatsapp.net",
+    name: "Mapped Chat",
+    unreadCount: 0,
+    archived: false,
+    lastMessageAt: "2026-03-23T15:00:00.000Z",
+    lastMessageText: "latest",
+  });
+  service.messages.set("116063589130297@lid", [
+    {
+      id: "wamid-1",
+      chat_id: "116063589130297@lid",
+      from_me: false,
+      text: "hello from lid",
+      kind: "conversation",
+      date: "2026-03-23T14:59:00.000Z",
+    },
+  ]);
+
+  const messages = service._chatMessages("628213441512@s.whatsapp.net", 10);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "hello from lid");
+});
+
+test("bridge seeds recent history from chat lastMessages payloads", () => {
+  const service = new WhatsAppBridgeService();
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.chatLabels.set("628213441512@s.whatsapp.net", new Set(["cloud-id"]));
+
+  service._onChats([
+    {
+      id: "628213441512@s.whatsapp.net",
+      name: "Seeded Chat",
+      lastMessages: [
+        {
+          key: {
+            remoteJid: "628213441512@s.whatsapp.net",
+            id: "wamid-2",
+            fromMe: false,
+          },
+          message: {
+            conversation: "seeded from chat snapshot",
+          },
+          messageTimestamp: 1_774_265_200,
+        },
+      ],
+    },
+  ]);
+
+  const [chat] = service._allowedChats(10);
+  const messages = service._chatMessages("628213441512@s.whatsapp.net", 10);
+  assert.equal(chat.last_message_text, "seeded from chat snapshot");
+  assert.equal(chat.last_message_at, "2026-03-23T11:26:40.000Z");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "seeded from chat snapshot");
+});
+
+test("bridge records history anchors and seeds snapshot message ranges", () => {
+  const service = new WhatsAppBridgeService();
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.chatLabels.set("139672638480573@lid", new Set(["cloud-id"]));
+
+  service._recordHistoryRange("139672638480573@lid", {
+    lastMessageTimestamp: 1_774_248_786,
+    messages: [
+      {
+        key: {
+          remoteJid: "139672638480573@lid",
+          id: "wamid-anchor",
+          fromMe: false,
+        },
+        message: {
+          conversation: "seeded from app-state",
+        },
+      },
+    ],
+  });
+
+  const anchor = service._historyAnchorForChat("139672638480573@lid");
+  const messages = service._chatMessages("139672638480573@lid", 10);
+  assert.equal(anchor?.key?.id, "wamid-anchor");
+  assert.equal(anchor?.oldestMsgTimestampMs, 1_774_248_786_000);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "seeded from app-state");
+});
+
+test("bridge persists chats and messages across restarts", async () => {
+  const authDir = await fs.mkdtemp(path.join(os.tmpdir(), "wa-bridge-state-"));
+  try {
+    const writer = new WhatsAppBridgeService({ authDir });
+    writer.chats.set("628213441512@s.whatsapp.net", {
+      jid: "628213441512@s.whatsapp.net",
+      name: "Persisted Chat",
+      unreadCount: 0,
+      archived: false,
+      lastMessageAt: "2026-03-23T11:26:40.000Z",
+      lastMessageText: "persisted message",
+    });
+    writer.messages.set("628213441512@s.whatsapp.net", [
+      {
+        id: "wamid-3",
+        chat_id: "628213441512@s.whatsapp.net",
+        from_me: false,
+        text: "persisted message",
+        kind: "conversation",
+        date: "2026-03-23T11:26:40.000Z",
+      },
+    ]);
+    writer.historyAnchors.set("628213441512@s.whatsapp.net", {
+      key: {
+        remoteJid: "628213441512@s.whatsapp.net",
+        id: "wamid-3",
+        fromMe: false,
+      },
+      oldestMsgTimestampMs: 1_774_265_200_000,
+    });
+    await writer._savePersistedBridgeState();
+
+    const reader = new WhatsAppBridgeService({ authDir });
+    await reader._loadPersistedBridgeState();
+
+    assert.equal(reader.chats.get("628213441512@s.whatsapp.net")?.lastMessageText, "persisted message");
+    assert.equal(reader.messages.get("628213441512@s.whatsapp.net")?.length, 1);
+    assert.equal(reader.messages.get("628213441512@s.whatsapp.net")?.[0]?.text, "persisted message");
+    assert.equal(reader.historyAnchors.get("628213441512@s.whatsapp.net")?.key?.id, "wamid-3");
+  } finally {
+    await fs.rm(authDir, { recursive: true, force: true });
+  }
+});
+
+test("bridge fetches WhatsApp history on demand when an anchor is available", async () => {
+  const service = new WhatsAppBridgeService();
+  service.connected = true;
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.chatLabels.set("139672638480573@lid", new Set(["cloud-id"]));
+  service.historyAnchors.set("139672638480573@lid", {
+    key: {
+      remoteJid: "139672638480573@lid",
+      id: "wamid-anchor",
+      fromMe: false,
+    },
+    oldestMsgTimestampMs: 1_774_248_786_000,
+  });
+  service.sock = {
+    async fetchMessageHistory(limit, key, timestampMs) {
+      assert.equal(limit, 50);
+      assert.equal(key.id, "wamid-anchor");
+      assert.equal(timestampMs, 1_774_248_786_000);
+      service._upsertMessage({
+        key: {
+          remoteJid: "139672638480573@lid",
+          id: "wamid-loaded",
+          fromMe: false,
+        },
+        message: {
+          conversation: "loaded on click",
+        },
+        messageTimestamp: 1_774_248_700,
+      }, false);
+    },
+  };
+
+  const messages = await service.ensureChatHistory("139672638480573@lid", 50);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "loaded on click");
+});
+
+test("bridge reconnect backoff grows and caps", () => {
+  const service = new WhatsAppBridgeService();
+  assert.equal(service._nextReconnectDelayMs(), 2_000);
+  service.reconnectAttempts = 1;
+  assert.equal(service._nextReconnectDelayMs(), 4_000);
+  service.reconnectAttempts = 2;
+  assert.equal(service._nextReconnectDelayMs(), 8_000);
+  service.reconnectAttempts = 10;
+  assert.equal(service._nextReconnectDelayMs(), 30_000);
+});
+
+test("bridge open connection resets reconnect state", async () => {
+  const service = new WhatsAppBridgeService();
+  const reconnectTimer = setTimeout(() => {}, 60_000);
+  const watchdogTimer = setTimeout(() => {}, 60_000);
+  const sock = {
+    user: { id: "1@s.whatsapp.net", lid: "1@lid", name: "Test User" },
+    authState: { creds: { registered: true } },
+    async resyncAppState() {},
+  };
+  service.sock = sock;
+  service.reconnectAttempts = 4;
+  service.reconnectTimer = reconnectTimer;
+  service.connectWatchdogTimer = watchdogTimer;
+
+  await service._onConnectionUpdate(sock, { connection: "open" });
+
+  assert.equal(service.reconnectAttempts, 0);
+  assert.equal(service.reconnectTimer, null);
+  assert.equal(service.connectWatchdogTimer, null);
+});
+
+test("bridge connect watchdog schedules reconnect when connect stalls", () => {
+  const service = new WhatsAppBridgeService();
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const captured = [];
+  global.setTimeout = ((fn, delay) => {
+    const handle = { fn, delay };
+    captured.push(handle);
+    return handle;
+  });
+  global.clearTimeout = (() => {});
+
+  try {
+    const sock = {
+      ended: false,
+      end() {
+        this.ended = true;
+      },
+    };
+    service.sock = sock;
+    service._armConnectWatchdog(sock);
+    assert.equal(captured[0].delay, 25_000);
+
+    captured[0].fn();
+
+    assert.equal(sock.ended, true);
+    assert.equal(service.lastError, "WhatsApp connection timed out. Retrying.");
+    assert.equal(service.reconnectAttempts, 1);
+    assert.equal(captured[1].delay, 2_000);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
