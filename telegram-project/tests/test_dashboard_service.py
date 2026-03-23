@@ -94,6 +94,21 @@ class _FakeMTProto:
         self.is_running = False
 
 
+class _FakeMcp:
+    def __init__(self) -> None:
+        self.is_running = True
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    async def start(self):
+        self.start_calls += 1
+        self.is_running = True
+
+    async def stop(self):
+        self.stop_calls += 1
+        self.is_running = False
+
+
 class _FakeTelegramAuth:
     def __init__(self) -> None:
         self.saved_payloads: list[tuple[str, str, str]] = []
@@ -239,11 +254,13 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.telegram_auth = _FakeTelegramAuth()
         self.secret_store = _FakeSecretStore()
         self.whatsapp = _FakeWhatsApp()
+        self.mcp = _FakeMcp()
         self.server = ProxyDashboardServer(
             self.config,
             _FakeUpstream(),
             self.registry,
             _FakeMTProto(),
+            self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
             secret_store=self.secret_store,
@@ -282,6 +299,8 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["telegram_auth"]["keychain_backend"], "macOS Keychain")
         self.assertEqual(payload["whatsapp"]["chats"][0]["title"], "Cloud WA Chat")
         self.assertTrue(payload["mcp"]["token_hidden"])
+        self.assertTrue(payload["mcp"]["listening"])
+        self.assertTrue(payload["mcp"]["bind_options"])
         self.assertNotIn("token", payload["mcp"])
 
         status, body = await self._get("/api/chat?peer_id=-1000000000042")
@@ -309,6 +328,25 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(payload["token"], "test-mcp-token")
         self.assertEqual(self.config.mcp_token, payload["token"])
         self.assertEqual(self.secret_store.mcp_token, payload["token"])
+
+    async def test_mcp_config_route_updates_host_and_port(self):
+        status, body = await self._post("/api/mcp/config", {"host": "100.92.237.54", "port": 8795})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["host"], "100.92.237.54")
+        self.assertEqual(payload["port"], 8795)
+        self.assertTrue(payload["listening"])
+        self.assertEqual(self.config.mcp_host, "100.92.237.54")
+        self.assertEqual(self.config.mcp_port, 8795)
+        self.assertEqual(self.mcp.stop_calls, 1)
+        self.assertEqual(self.mcp.start_calls, 1)
+
+        status, body = await self._get("/api/overview")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["mcp"]["host"], "100.92.237.54")
+        self.assertEqual(payload["mcp"]["port"], 8795)
 
     async def test_mtproto_enable_toggle_route(self):
         status, body = await self._post("/api/mtproto/enabled", {"enabled": False})

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import socket
+import subprocess
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,6 +12,7 @@ from telethon import utils
 
 from .config import ProxyConfig
 from .downstream_registry import DownstreamRegistry
+from .mcp_service import McpServer
 from .mtproto_service import MTProtoProxyServer
 from .secrets_store import MacOSSecretStore
 from .upstream import UpstreamAdapter, UpstreamUnavailableError
@@ -50,6 +54,7 @@ class ProxyDashboardServer:
         upstream: UpstreamAdapter,
         registry: DownstreamRegistry,
         mtproto: MTProtoProxyServer,
+        mcp: McpServer,
         telegram_auth=None,
         whatsapp: WhatsAppBridge | None = None,
         secret_store: MacOSSecretStore | None = None,
@@ -58,6 +63,7 @@ class ProxyDashboardServer:
         self.upstream = upstream
         self.registry = registry
         self.mtproto = mtproto
+        self.mcp = mcp
         self.telegram_auth = telegram_auth
         self.whatsapp = whatsapp
         self.secret_store = secret_store or MacOSSecretStore()
@@ -134,6 +140,9 @@ class ProxyDashboardServer:
             if method == "POST" and url.path == "/api/mtproto/enabled":
                 await self._handle_mtproto_enabled_post(writer, body)
                 return
+            if method == "POST" and url.path == "/api/mcp/config":
+                await self._handle_mcp_config_post(writer, body)
+                return
             if method == "POST" and url.path == "/api/mcp/token/rotate":
                 await self._handle_mcp_token_rotate(writer)
                 return
@@ -186,11 +195,13 @@ class ProxyDashboardServer:
                 "host": self.config.mcp_host,
                 "port": self.config.mcp_port,
                 "path": self.config.mcp_path,
+                "listening": self.mcp.is_running,
                 "transport": "HTTP JSON-RPC",
                 "auth": "Authorization: Bearer <token>",
                 "allowed_origin": "localhost / 127.0.0.1",
                 "token_hidden": True,
                 "token_env_managed": self.config.mcp_token_env_managed,
+                "bind_options": self._mcp_bind_options(),
             },
             "telegram_auth": await self._build_telegram_auth(),
             "whatsapp": whatsapp,
@@ -436,6 +447,82 @@ class ProxyDashboardServer:
             },
         )
 
+    async def _handle_mcp_config_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        host = str(payload.get("host", "")).strip()
+        if not host:
+            await self._write_json(writer, 400, {"error": "MCP host is required"})
+            return
+        try:
+            port = int(payload.get("port", 0))
+        except (TypeError, ValueError):
+            await self._write_json(writer, 400, {"error": "MCP port must be a number"})
+            return
+        if not 1 <= port <= 65535:
+            await self._write_json(writer, 400, {"error": "MCP port must be between 1 and 65535"})
+            return
+
+        if host == self.config.mcp_host and port == self.config.mcp_port and self.mcp.is_running:
+            await self._write_json(
+                writer,
+                200,
+                {
+                    "ok": True,
+                    "host": self.config.mcp_host,
+                    "port": self.config.mcp_port,
+                    "path": self.config.mcp_path,
+                    "listening": self.mcp.is_running,
+                    "message": "MCP listener already matches the requested interface and port.",
+                },
+            )
+            return
+
+        previous_host = self.config.mcp_host
+        previous_port = self.config.mcp_port
+        was_running = self.mcp.is_running
+
+        try:
+            if was_running:
+                await self.mcp.stop()
+            self.config.mcp_host = host
+            self.config.mcp_port = port
+            self.config.save_mcp_settings()
+            await self.mcp.start()
+        except Exception as exc:
+            self.config.mcp_host = previous_host
+            self.config.mcp_port = previous_port
+            self.config.save_mcp_settings()
+            try:
+                if self.mcp.is_running:
+                    await self.mcp.stop()
+            except Exception:
+                pass
+            if was_running:
+                try:
+                    await self.mcp.start()
+                except Exception:
+                    pass
+            await self._write_json(writer, 500, {"error": str(exc) or exc.__class__.__name__})
+            return
+
+        await self._write_json(
+            writer,
+            200,
+            {
+                "ok": True,
+                "host": self.config.mcp_host,
+                "port": self.config.mcp_port,
+                "path": self.config.mcp_path,
+                "listening": self.mcp.is_running,
+                "message": f"MCP listener moved to {self.config.mcp_host}:{self.config.mcp_port}.",
+            },
+        )
+
     def _serialize_dialog(self, dialog) -> dict[str, object]:
         entity = dialog.entity
         return {
@@ -464,6 +551,75 @@ class ProxyDashboardServer:
         if getattr(dialog, "is_channel", False):
             return "channel"
         return "chat"
+
+    def _mcp_bind_options(self) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add(host: str, label: str, interface: str = "") -> None:
+            host = host.strip()
+            if not host or host in seen:
+                return
+            seen.add(host)
+            payload = {"host": host, "label": label}
+            if interface:
+                payload["interface"] = interface
+            options.append(payload)
+
+        add("127.0.0.1", "Localhost (lo0)", "lo0")
+        add("0.0.0.0", "All interfaces", "*")
+
+        for option in self._detected_interface_options():
+            add(option["host"], option["label"], option["interface"])
+        add(self.config.downstream_host, f"Advertised host ({self.config.downstream_host})")
+        add(self.config.mcp_host, f"Current MCP host ({self.config.mcp_host})")
+        return options
+
+    def _detected_interface_options(self) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+        for _index, interface in socket.if_nameindex():
+            if interface == "lo0":
+                continue
+            host = self._ipv4_for_interface(interface)
+            if not host:
+                continue
+            options.append(
+                {
+                    "host": host,
+                    "interface": interface,
+                    "label": f"{self._interface_label(interface, host)} ({host})",
+                }
+            )
+        return options
+
+    def _ipv4_for_interface(self, interface: str) -> str:
+        try:
+            result = subprocess.run(
+                ["ifconfig", interface],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return ""
+        if result.returncode != 0:
+            return ""
+        match = re.search(r"^\s*inet (\d+\.\d+\.\d+\.\d+)\b", result.stdout, flags=re.MULTILINE)
+        if not match:
+            return ""
+        host = match.group(1).strip()
+        if not host or host == "127.0.0.1":
+            return ""
+        return host
+
+    def _interface_label(self, interface: str, host: str) -> str:
+        if interface.startswith("utun") or host.startswith("100."):
+            return f"Tailscale or VPN ({interface})"
+        if interface.startswith("en"):
+            return f"Network interface ({interface})"
+        if interface.startswith("bridge"):
+            return f"Bridge interface ({interface})"
+        return f"Interface {interface}"
 
     async def _load_upstream_identity(self, enabled: bool) -> dict[str, object]:
         if not enabled:

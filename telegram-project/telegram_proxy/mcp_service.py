@@ -56,6 +56,8 @@ class McpServer:
         self._update_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        if self._server is not None:
+            return
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self.config.mcp_host,
@@ -85,6 +87,11 @@ class McpServer:
             return
         self._server.close()
         await self._server.wait_closed()
+        self._server = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._server is not None and self._server.is_serving()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         keep_open = False

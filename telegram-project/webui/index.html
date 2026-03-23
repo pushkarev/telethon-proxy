@@ -46,14 +46,14 @@
         </button>
         <button class="folder-button" data-section="telegram">
           <div class="folder-label-row">
-            <div class="folder-name">Telegram</div>
+            <div class="folder-name" id="telegramFolderName">Telegram</div>
             <span class="connection-check" id="telegramConnectionCheck" hidden aria-hidden="true">✓</span>
           </div>
           <div class="folder-meta">Cloud chats, forwarded APIs, and the upstream login flow.</div>
         </button>
         <button class="folder-button" data-section="whatsapp">
           <div class="folder-label-row">
-            <div class="folder-name">WhatsApp</div>
+            <div class="folder-name" id="whatsappFolderName">WhatsApp</div>
             <span class="connection-check" id="whatsappConnectionCheck" hidden aria-hidden="true">✓</span>
           </div>
           <div class="folder-meta">Cloud-labeled chats, pairing-code auth, and the local Baileys bridge.</div>
@@ -370,6 +370,7 @@
                 </div>
                 <div class="kv" id="mcpGrid"></div>
               </div>
+              <div class="info-card" id="mcpListenerCard"></div>
               <div class="info-card accent-card" id="mcpCard"></div>
             </div>
           </div>

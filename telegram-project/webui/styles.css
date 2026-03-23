@@ -566,6 +566,11 @@ h1 {
   align-content: start;
 }
 
+.mcp-settings-form {
+  display: grid;
+  gap: 12px;
+}
+
 #whatsappPairingForm {
   display: grid;
 }
@@ -689,7 +694,22 @@ h1 {
   font: inherit;
 }
 
+.field select {
+  width: 100%;
+  border: 1px solid rgba(24, 32, 43, 0.12);
+  border-radius: 14px;
+  padding: 12px 13px;
+  background: rgba(247, 243, 235, 0.96);
+  color: var(--ink);
+  font: inherit;
+}
+
 .field input:focus {
+  outline: 2px solid rgba(54, 101, 166, 0.16);
+  border-color: rgba(54, 101, 166, 0.34);
+}
+
+.field select:focus {
   outline: 2px solid rgba(54, 101, 166, 0.16);
   border-color: rgba(54, 101, 166, 0.34);
 }

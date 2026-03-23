@@ -269,11 +269,15 @@ function renderOverview(data) {
     ...DEFAULT_WHATSAPP_AUTH,
     ...(data.whatsapp || {}),
   };
+  const telegramChatCount = Array.isArray(data.chats) ? data.chats.length : 0;
+  const whatsappChatCount = Array.isArray(whatsappAuth.chats) ? whatsappAuth.chats.length : 0;
 
-  el("chatCount").textContent = data.chats.length;
+  el("chatCount").textContent = telegramChatCount;
   el("dashboardAddress").textContent = `${data.config.dashboard_host}:${data.config.dashboard_port}`;
   el("folderBadge").textContent = data.config.cloud_folder_name;
   el("heroScopePill").textContent = `${data.config.cloud_folder_name} scope`;
+  el("telegramFolderName").textContent = `Telegram (${telegramChatCount})`;
+  el("whatsappFolderName").textContent = `WhatsApp (${whatsappChatCount})`;
   el("heroTelegramPill").textContent = telegramAuth.has_session ? "Telegram ready" : "Telegram login needed";
   el("heroWhatsAppPill").textContent = whatsappAuth.connected
     ? "WhatsApp connected"
@@ -300,10 +304,42 @@ function renderOverview(data) {
 
   el("mcpGrid").innerHTML = [
     ["Endpoint", `http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
+    ["Listener", data.mcp.listening ? "listening" : "offline"],
     ["Transport", data.mcp.transport],
     ["Auth", data.mcp.auth],
     ["Allowed origin", data.mcp.allowed_origin],
   ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
+
+  const bindOptions = Array.isArray(data.mcp.bind_options) ? data.mcp.bind_options : [];
+  el("mcpListenerCard").innerHTML = `
+    <div class="info-card-head">
+      <div class="section-kicker">Listener</div>
+      <h3>Bind interface and port</h3>
+    </div>
+    <form id="mcpListenerForm" class="mcp-settings-form">
+      <label class="field">
+        <span>Interface</span>
+        <select id="mcpHostSelect" name="host">
+          ${bindOptions.map((option) => `
+            <option value="${esc(option.host)}"${option.host === data.mcp.host ? " selected" : ""}>
+              ${esc(option.label || option.host)}
+            </option>
+          `).join("")}
+        </select>
+      </label>
+      <label class="field">
+        <span>Port</span>
+        <input id="mcpPortInput" name="port" type="text" inputmode="numeric" value="${esc(data.mcp.port)}" autocomplete="off" />
+      </label>
+      <div class="meta">
+        Pick the interface you want MCP to bind to, then choose the port. Localhost keeps it private to this Mac; the Tailscale or network interfaces make it reachable from other devices on that network.
+      </div>
+      <div class="auth-actions">
+        <button type="submit" class="primary-button" id="applyMcpConfigButton">Apply and restart MCP</button>
+        <span class="pill">${data.mcp.listening ? "Listening" : "Offline"}</span>
+      </div>
+    </form>
+  `;
 
   el("mcpCard").innerHTML = `
     <div class="row">
@@ -342,6 +378,22 @@ function renderOverview(data) {
       setNotice(result.message || "MCP token rotated.", "success");
       await loadOverview();
       showMcpCopyBubble("New token copied");
+    });
+  }
+
+  const mcpListenerForm = el("mcpListenerForm");
+  if (mcpListenerForm) {
+    mcpListenerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = el("applyMcpConfigButton");
+      button.disabled = true;
+      try {
+        await setMcpConfig(el("mcpHostSelect").value.trim(), el("mcpPortInput").value.trim());
+      } catch (error) {
+        setNotice(error.message || "Could not update MCP listener settings.", "error");
+      } finally {
+        button.disabled = false;
+      }
     });
   }
 
@@ -809,6 +861,12 @@ async function clearWhatsAppSession() {
 async function setMtprotoEnabled(enabled) {
   const result = await postJson("/api/mtproto/enabled", { enabled });
   setNotice(result.message || "MTProto proxy updated.", "success");
+  await loadOverview();
+}
+
+async function setMcpConfig(host, port) {
+  const result = await postJson("/api/mcp/config", { host, port });
+  setNotice(result.message || "MCP listener updated.", "success");
   await loadOverview();
 }
 

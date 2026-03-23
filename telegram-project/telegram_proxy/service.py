@@ -40,6 +40,7 @@ class ProxyService:
             self.upstream,
             self.registry,
             self.mtproto,
+            self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
             secret_store=self.secret_store,

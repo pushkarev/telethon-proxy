@@ -58,3 +58,24 @@ class ProxyConfigTests(unittest.TestCase):
 
         self.assertEqual(config.upstream_api_id, 99999)
         self.assertEqual(config.upstream_api_hash, "env-hash")
+
+    def test_from_env_loads_saved_mcp_settings_when_env_missing(self):
+        secret_store = mock.Mock()
+        secret_store.is_available = True
+        secret_store.load_upstream_secrets.return_value = UpstreamSecrets()
+        secret_store.load_or_create_mcp_token.return_value = ("mcp-token", False)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "mcp_settings.json"
+            settings_path.write_text('{"host": "100.92.237.54", "port": 8795}\n', encoding="utf-8")
+
+            with mock.patch("telegram_proxy.config.MacOSSecretStore", return_value=secret_store):
+                with mock.patch.dict(
+                    os.environ,
+                    {"TP_MCP_SETTINGS": str(settings_path)},
+                    clear=False,
+                ):
+                    config = ProxyConfig.from_env()
+
+        self.assertEqual(config.mcp_host, "100.92.237.54")
+        self.assertEqual(config.mcp_port, 8795)

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import QRCode from "qrcode";
 import makeWASocket, {
+  ALL_WA_PATCH_NAMES,
   Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
@@ -18,11 +19,10 @@ const CLOUD_LABEL_NAME = (process.env.TP_WHATSAPP_CLOUD_LABEL || "Cloud").trim()
 const AUTH_DIR = path.resolve(
   process.env.TP_WHATSAPP_AUTH_DIR || path.join(process.env.HOME || process.cwd(), ".tlt-proxy", "whatsapp-auth"),
 );
+const LABEL_STATE_NAME = "label-state.json";
 const MAX_CHAT_MESSAGES = 200;
 const MAX_UPDATES = 500;
 const RECONNECT_DELAY_MS = 2_000;
-const APP_STATE_COLLECTIONS = ["critical_block", "critical_unblock_low", "regular", "regular_low", "regular_high"];
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -131,8 +131,9 @@ function messageKind(message) {
   return Object.keys(body)[0] || "unknown";
 }
 
-class WhatsAppBridgeService {
-  constructor() {
+export class WhatsAppBridgeService {
+  constructor({ authDir = AUTH_DIR } = {}) {
+    this.authDir = authDir;
     this.server = null;
     this.sock = null;
     this.saveCreds = null;
@@ -152,11 +153,15 @@ class WhatsAppBridgeService {
     this.messages = new Map();
     this.labels = new Map();
     this.chatLabels = new Map();
+    this.lidToPn = new Map();
+    this.pnToLid = new Map();
     this.recentUpdates = [];
+    this.loadedPersistedLabelState = false;
   }
 
   async start() {
-    await fs.mkdir(AUTH_DIR, { recursive: true });
+    await fs.mkdir(this.authDir, { recursive: true });
+    await this._loadPersistedLabelState();
     await this._connect();
     this.server = http.createServer(async (req, res) => {
       try {
@@ -195,7 +200,7 @@ class WhatsAppBridgeService {
     if (this.stopping) {
       return;
     }
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({
       auth: state,
@@ -263,10 +268,16 @@ class WhatsAppBridgeService {
       this.qrSvg = null;
       this.lastError = null;
       try {
-        await sock.resyncAppState(APP_STATE_COLLECTIONS, false);
+        // Existing labels and chat-label associations live in app-state patches, so
+        // we need an initial/full sync here rather than an incremental delta sync.
+        await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
+        if (!this.loadedPersistedLabelState && this.labels.size === 0 && this.chatLabels.size === 0) {
+          await this._rebuildLabelStateFromScratch(sock);
+        }
       } catch (error) {
         this.lastError = error?.message || String(error);
       }
+      await this._savePersistedLabelState();
       await this._seedChatsFromPersistedMappings(sock.authState?.creds);
       return;
     }
@@ -349,6 +360,7 @@ class WhatsAppBridgeService {
       this.messages.delete(jid);
       this.chatLabels.delete(jid);
     }
+    void this._savePersistedLabelState();
   }
 
   _onMessagesUpsert(event) {
@@ -404,6 +416,7 @@ class WhatsAppBridgeService {
       deleted: Boolean(label.deleted),
       predefinedId: label.predefinedId ?? null,
     });
+    void this._savePersistedLabelState();
   }
 
   _onLabelAssociation(event) {
@@ -418,6 +431,112 @@ class WhatsAppBridgeService {
       labels.add(association.labelId);
     }
     this.chatLabels.set(association.chatId, labels);
+    this._ensureChatRecord(association.chatId);
+    void this._savePersistedLabelState();
+  }
+
+  _chatAliasJids(jid) {
+    const aliases = new Set();
+    if (!jid) {
+      return aliases;
+    }
+    aliases.add(jid);
+    const user = jidUser(jid);
+    if (!user) {
+      return aliases;
+    }
+    if (String(jid).endsWith("@lid")) {
+      aliases.add(`${user}@s.whatsapp.net`);
+      const pnUser = this.lidToPn.get(user);
+      if (pnUser) {
+        aliases.add(`${pnUser}@s.whatsapp.net`);
+      }
+    } else if (String(jid).endsWith("@s.whatsapp.net")) {
+      const lidUser = this.pnToLid.get(user);
+      if (lidUser) {
+        aliases.add(`${lidUser}@lid`);
+      }
+    }
+    return aliases;
+  }
+
+  _ensureChatRecord(jid) {
+    for (const candidate of this._chatAliasJids(jid)) {
+      if (this.chats.has(candidate)) {
+        continue;
+      }
+      this.chats.set(candidate, {
+        jid: candidate,
+        name: firstDefined(this.contacts.get(candidate)?.name, displayTitleFromJid(candidate)),
+        unreadCount: 0,
+        archived: false,
+        lastMessageAt: null,
+        lastMessageText: null,
+      });
+    }
+  }
+
+  _labelStatePath() {
+    return path.join(this.authDir, LABEL_STATE_NAME);
+  }
+
+  _serializeLabelState() {
+    return {
+      labels: [...this.labels.values()],
+      chat_labels: [...this.chatLabels.entries()].map(([chatId, labels]) => ({
+        chat_id: chatId,
+        label_ids: [...labels],
+      })),
+    };
+  }
+
+  async _loadPersistedLabelState() {
+    this.loadedPersistedLabelState = false;
+    try {
+      const raw = await fs.readFile(this._labelStatePath(), "utf-8");
+      const payload = JSON.parse(raw);
+      this.labels.clear();
+      this.chatLabels.clear();
+      for (const label of payload?.labels || []) {
+        if (!label?.id) {
+          continue;
+        }
+        this.labels.set(label.id, {
+          id: label.id,
+          name: label.name || "",
+          color: label.color ?? null,
+          deleted: Boolean(label.deleted),
+          predefinedId: label.predefinedId ?? null,
+        });
+      }
+      for (const association of payload?.chat_labels || []) {
+        if (!association?.chat_id || !Array.isArray(association.label_ids)) {
+          continue;
+        }
+        this.chatLabels.set(association.chat_id, new Set(association.label_ids.filter(Boolean)));
+        this._ensureChatRecord(association.chat_id);
+      }
+      this.loadedPersistedLabelState = this.labels.size > 0 || this.chatLabels.size > 0;
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        this.lastError = error?.message || String(error);
+      }
+    }
+  }
+
+  async _savePersistedLabelState() {
+    await fs.mkdir(this.authDir, { recursive: true });
+    await fs.writeFile(this._labelStatePath(), JSON.stringify(this._serializeLabelState()), "utf-8");
+    this.loadedPersistedLabelState = this.labels.size > 0 || this.chatLabels.size > 0;
+  }
+
+  async _rebuildLabelStateFromScratch(sock) {
+    await sock.authState.keys.set({
+      "app-state-sync-version": Object.fromEntries(ALL_WA_PATCH_NAMES.map((name) => [name, null])),
+    });
+    this.labels.clear();
+    this.chatLabels.clear();
+    await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
   }
 
   _upsertMessage(message, pushUpdate) {
@@ -496,13 +615,13 @@ class WhatsAppBridgeService {
   }
 
   _cloudFilterMode() {
-    return this._cloudLabelRecord() ? "cloud-label" : "all-chats-fallback";
+    return this._cloudLabelRecord() ? "cloud-label" : "label-required";
   }
 
   async _seedChatsFromPersistedMappings(creds = null) {
     let entries = [];
     try {
-      entries = await fs.readdir(AUTH_DIR);
+      entries = await fs.readdir(this.authDir);
     } catch {
       return;
     }
@@ -514,11 +633,23 @@ class WhatsAppBridgeService {
         continue;
       }
       try {
-        const raw = await fs.readFile(path.join(AUTH_DIR, entry), "utf-8");
+        const raw = await fs.readFile(path.join(this.authDir, entry), "utf-8");
         mappingEntries.push([match[1], JSON.parse(raw)]);
       } catch {
         // ignore malformed persisted mapping files
       }
+    }
+
+    this.lidToPn.clear();
+    this.pnToLid.clear();
+    for (const [pnUser, lidUser] of mappingEntries) {
+      if (!pnUser || !lidUser) {
+        continue;
+      }
+      const normalizedPn = String(pnUser);
+      const normalizedLid = String(lidUser);
+      this.pnToLid.set(normalizedPn, normalizedLid);
+      this.lidToPn.set(normalizedLid, normalizedPn);
     }
 
     const peerJids = peerJidsFromLidMappings(mappingEntries, {
@@ -543,17 +674,41 @@ class WhatsAppBridgeService {
   _isAllowedChat(jid) {
     const label = this._cloudLabelRecord();
     if (!label) {
-      return this.chats.has(jid);
+      return false;
     }
-    return Boolean(this.chatLabels.get(jid)?.has(label.id));
+    for (const candidate of this._chatAliasJids(jid)) {
+      if (this.chatLabels.get(candidate)?.has(label.id)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   _chatTitle(jid, chat) {
     return firstDefined(chat?.name, this.contacts.get(jid)?.name, displayTitleFromJid(jid), jid);
   }
 
+  _canonicalAllowedChatJid(jid) {
+    if (String(jid).endsWith("@lid")) {
+      const pnUser = this.lidToPn.get(jidUser(jid));
+      if (pnUser) {
+        const pnJid = `${pnUser}@s.whatsapp.net`;
+        if (this.chats.has(pnJid)) {
+          return pnJid;
+        }
+      }
+    }
+    return jid;
+  }
+
   _serializeChat(jid, chat) {
-    const labels = [...(this.chatLabels.get(jid) || [])]
+    const labelIds = new Set();
+    for (const candidate of this._chatAliasJids(jid)) {
+      for (const labelId of this.chatLabels.get(candidate) || []) {
+        labelIds.add(labelId);
+      }
+    }
+    const labels = [...labelIds]
       .map((labelId) => this.labels.get(labelId))
       .filter(Boolean)
       .map((label) => label.name);
@@ -570,9 +725,17 @@ class WhatsAppBridgeService {
   }
 
   _allowedChats(limit = 200) {
-    const chats = [...this.chats.entries()]
-      .filter(([jid]) => this._isAllowedChat(jid))
-      .map(([jid, chat]) => this._serializeChat(jid, chat))
+    const unique = new Map();
+    for (const [jid, chat] of this.chats.entries()) {
+      if (!this._isAllowedChat(jid)) {
+        continue;
+      }
+      const canonicalJid = this._canonicalAllowedChatJid(jid);
+      if (!unique.has(canonicalJid)) {
+        unique.set(canonicalJid, this._serializeChat(canonicalJid, this.chats.get(canonicalJid) || chat));
+      }
+    }
+    const chats = [...unique.values()]
       .sort((left, right) => {
         const leftTs = Date.parse(left.last_message_at || 0);
         const rightTs = Date.parse(right.last_message_at || 0);
@@ -606,7 +769,7 @@ class WhatsAppBridgeService {
       cloud_label_found: Boolean(cloudLabel),
       cloud_label: cloudLabel,
       cloud_filter_mode: this._cloudFilterMode(),
-      auth_dir: AUTH_DIR,
+      auth_dir: this.authDir,
       me: this.me,
       started_at: this.startedAt,
       last_error: this.lastError,
@@ -630,8 +793,8 @@ class WhatsAppBridgeService {
         // ignore remote logout failures, local cleanup still matters
       }
     }
-    await fs.rm(AUTH_DIR, { recursive: true, force: true });
-    await fs.mkdir(AUTH_DIR, { recursive: true });
+    await fs.rm(this.authDir, { recursive: true, force: true });
+    await fs.mkdir(this.authDir, { recursive: true });
     this.registered = false;
     this.connected = false;
     this.connection = "idle";
