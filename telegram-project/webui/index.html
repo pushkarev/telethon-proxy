@@ -10,33 +10,27 @@
 <body>
   <div class="wrap">
     <div class="hero">
-      <div class="panel hero-main">
-        <div class="eyebrow">Cloud Folder Proxy</div>
-        <h1>Telethon service control room</h1>
-        <div class="sub">A local desktop console for Telegram and WhatsApp access, Cloud-scoped chat surfaces, issued downstream sessions, and the private MCP endpoint this machine exposes.</div>
-        <div class="hero-ribbon">
-          <span class="hero-pill">Desktop-first auth</span>
-          <span class="hero-pill">Cloud-scoped isolation</span>
-          <span class="hero-pill">Keychain-backed secrets</span>
-        </div>
-      </div>
-      <div class="panel hero-side">
-        <div class="stat-grid">
-          <div class="stat-tile">
-            <div class="stat-label">Connected clients</div>
-            <div class="stat-value" id="clientCount">0</div>
+      <div class="panel hero-main hero-compact">
+        <div class="hero-head">
+          <div>
+            <h1>Telethon Proxy</h1>
+            <div class="sub">Telegram, WhatsApp, and MCP in one compact local console.</div>
           </div>
+          <div class="hero-ribbon">
+            <span class="hero-pill" id="heroScopePill">Cloud scope</span>
+            <span class="hero-pill" id="heroTelegramPill">Telegram</span>
+            <span class="hero-pill" id="heroWhatsAppPill">WhatsApp</span>
+          </div>
+        </div>
+        <div class="hero-stats">
           <div class="stat-tile">
-            <div class="stat-label">Accessible chats</div>
+            <div class="stat-label">Visible chats</div>
             <div class="stat-value" id="chatCount">0</div>
           </div>
           <div class="stat-tile stat-tile-wide">
             <div class="stat-label">Background API</div>
-            <div class="meta"><span id="dashboardAddress"></span></div>
+            <div class="meta" id="dashboardAddress"></div>
           </div>
-        </div>
-        <div class="hero-note">
-          Telegram uses the upstream <span class="mono">Cloud</span> folder, while WhatsApp uses a <span class="mono">Cloud</span> label to scope local access.
         </div>
       </div>
     </div>
@@ -48,14 +42,20 @@
         <div class="folder-title">Folders</div>
         <button class="folder-button active" data-section="configuration">
           <div class="folder-name">Configuration</div>
-          <div class="folder-meta">Proxy basics, network endpoints, and connected clients.</div>
+          <div class="folder-meta">Proxy basics, network endpoints, and issued access.</div>
         </button>
         <button class="folder-button" data-section="telegram">
-          <div class="folder-name">Telegram</div>
+          <div class="folder-label-row">
+            <div class="folder-name">Telegram</div>
+            <span class="connection-check" id="telegramConnectionCheck" hidden aria-hidden="true">✓</span>
+          </div>
           <div class="folder-meta">Cloud chats, forwarded APIs, and the upstream login flow.</div>
         </button>
         <button class="folder-button" data-section="whatsapp">
-          <div class="folder-name">WhatsApp</div>
+          <div class="folder-label-row">
+            <div class="folder-name">WhatsApp</div>
+            <span class="connection-check" id="whatsappConnectionCheck" hidden aria-hidden="true">✓</span>
+          </div>
           <div class="folder-meta">Cloud-labeled chats, pairing-code auth, and the local Baileys bridge.</div>
         </button>
         <button class="folder-button" data-section="mcp">
@@ -99,16 +99,6 @@
                 </div>
               </div>
               <div class="client-list" id="credentialList"></div>
-            </div>
-
-            <div class="content-block">
-              <div class="content-block-head">
-                <div>
-                  <div class="section-kicker">Live Connections</div>
-                  <h3>Connected clients</h3>
-                </div>
-              </div>
-              <div class="client-list" id="clientList"></div>
             </div>
           </div>
         </section>
@@ -267,53 +257,74 @@
             <span class="badge" id="whatsappBadge">Needs QR</span>
           </div>
           <div class="section-body">
-            <div class="settings-grid whatsapp-grid">
-              <div class="credential-card auth-guide">
-                <div class="row">
-                  <div class="title">Cloud visibility rule</div>
-                  <span class="pill">Label scoped</span>
-                </div>
-                <div class="meta">
-                  Only chats carrying the special <span class="mono">Cloud</span> label inside WhatsApp are exposed here and through MCP. If a chat is missing, apply that label first.
-                </div>
+            <div class="telegram-shell">
+              <div class="telegram-nav">
+                <button class="whatsapp-pane-button active" data-whatsapp-pane="chats">Chats</button>
+                <button class="whatsapp-pane-button" data-whatsapp-pane="settings">Settings</button>
               </div>
 
-              <div class="credential-card" id="whatsappAuthStatus"></div>
-
-              <form class="credential-card auth-form visible" id="whatsappPairingForm">
-                <div class="row">
-                  <div class="title">Scan login QR</div>
-                  <span class="pill">Linked devices</span>
-                </div>
-                <div class="meta">
-                  Open <span class="mono">WhatsApp -> Linked devices -> Link a device</span> on your phone and scan the QR shown below. Use refresh if the code expires.
-                </div>
-                <div id="whatsappQrCard" class="whatsapp-qr-card"></div>
-                <div class="auth-actions">
-                  <button type="submit" class="primary-button">Refresh QR</button>
-                  <button type="button" class="danger-button" id="whatsappLogoutButton">Clear WhatsApp session</button>
-                </div>
-              </form>
-
-              <div class="chat-shell whatsapp-chat-shell">
-                <div class="chat-sidebar">
-                  <div class="sidebar-heading">
-                    <div class="section-kicker">Visible chats</div>
-                    <h3>Cloud label</h3>
+              <section class="whatsapp-pane active" data-whatsapp-pane-panel="chats">
+                <div class="credential-card auth-guide">
+                  <div class="row">
+                    <div class="title">Cloud visibility rule</div>
+                    <span class="pill">Label scoped</span>
                   </div>
-                  <div class="chat-list" id="whatsappChatList"></div>
+                  <div class="meta">
+                    Only chats carrying the special <span class="mono">Cloud</span> label inside WhatsApp are exposed here and through MCP. If a chat is missing, apply that label first.
+                  </div>
                 </div>
-                <div class="chat-stage">
-                  <div class="chat-screen-head">
-                    <div class="row">
-                      <div class="title" id="whatsappMessageHeading">Messages</div>
-                      <span class="pill" id="whatsappChatKindPill">chat</span>
+
+                <div class="chat-shell whatsapp-chat-shell">
+                  <div class="chat-sidebar">
+                    <div class="sidebar-heading">
+                      <div class="section-kicker">Visible chats</div>
+                      <h3>Cloud label</h3>
                     </div>
-                    <div class="chat-screen-meta" id="whatsappChatScreenMeta">Scan the QR and label chats with Cloud to inspect recent history.</div>
+                    <div class="chat-list" id="whatsappChatList"></div>
                   </div>
-                  <div class="message-list" id="whatsappMessageList"></div>
+                  <div class="chat-stage">
+                    <div class="chat-screen-head">
+                      <div class="row">
+                        <div class="title" id="whatsappMessageHeading">Messages</div>
+                        <span class="pill" id="whatsappChatKindPill">chat</span>
+                      </div>
+                      <div class="chat-screen-meta" id="whatsappChatScreenMeta">Scan the QR and label chats with Cloud to inspect recent history.</div>
+                    </div>
+                    <div class="message-list" id="whatsappMessageList"></div>
+                  </div>
                 </div>
-              </div>
+              </section>
+
+              <section class="whatsapp-pane" data-whatsapp-pane-panel="settings">
+                <div class="settings-grid whatsapp-settings-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">WhatsApp pairing</div>
+                      <span class="pill">Linked devices</span>
+                    </div>
+                    <div class="meta">
+                      Open <span class="mono">WhatsApp -> Linked devices -> Link a device</span> on your phone and scan the QR shown below. Once connected, add the <span class="mono">Cloud</span> label to any chats you want visible here.
+                    </div>
+                  </div>
+
+                  <div class="credential-card" id="whatsappAuthStatus"></div>
+
+                  <form class="credential-card auth-form visible" id="whatsappPairingForm">
+                    <div class="row">
+                      <div class="title">Scan login QR</div>
+                      <span class="pill">Bridge auth</span>
+                    </div>
+                    <div class="meta">
+                      Refresh the QR if it expires, or clear the saved session to pair a different account.
+                    </div>
+                    <div id="whatsappQrCard" class="whatsapp-qr-card"></div>
+                    <div class="auth-actions">
+                      <button type="submit" class="primary-button">Refresh QR</button>
+                      <button type="button" class="danger-button" id="whatsappLogoutButton">Clear WhatsApp session</button>
+                    </div>
+                  </form>
+                </div>
+              </section>
             </div>
           </div>
         </section>

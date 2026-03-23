@@ -130,10 +130,10 @@ async function createWindow() {
   }
   await waitForDashboard();
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 980,
-    minWidth: 1100,
-    minHeight: 760,
+    width: 1180,
+    height: 820,
+    minWidth: 960,
+    minHeight: 680,
     autoHideMenuBar: true,
     backgroundColor: "#f6f0e4",
     title: "Telethon Proxy",

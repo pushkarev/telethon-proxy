@@ -2,6 +2,7 @@ let selectedPeerId = null;
 let selectedWhatsAppJid = null;
 let activeSection = "configuration";
 let activeTelegramPane = "chats";
+let activeWhatsAppPane = "chats";
 let telegramAuthState = null;
 let whatsappAuthState = null;
 
@@ -135,6 +136,48 @@ function setActiveTelegramPane(pane) {
   });
 }
 
+function setActiveWhatsAppPane(pane) {
+  activeWhatsAppPane = pane;
+  document.querySelectorAll(".whatsapp-pane-button").forEach((node) => {
+    node.classList.toggle("active", node.dataset.whatsappPane === pane);
+  });
+  document.querySelectorAll(".whatsapp-pane").forEach((node) => {
+    node.classList.toggle("active", node.dataset.whatsappPanePanel === pane);
+  });
+}
+
+function setConnectionCheck(id, connected, label) {
+  const node = el(id);
+  if (!node) {
+    return;
+  }
+  node.hidden = !connected;
+  if (connected) {
+    const statusText = `${label} connected`;
+    node.setAttribute("title", statusText);
+    node.setAttribute("aria-label", statusText);
+  } else {
+    node.removeAttribute("title");
+    node.removeAttribute("aria-label");
+  }
+}
+
+function syncConnectionChecks({
+  telegramAuth = telegramAuthState,
+  whatsappAuth = whatsappAuthState,
+} = {}) {
+  setConnectionCheck(
+    "telegramConnectionCheck",
+    Boolean(telegramAuth?.has_session && telegramAuth?.next_step === "ready"),
+    "Telegram",
+  );
+  setConnectionCheck(
+    "whatsappConnectionCheck",
+    Boolean(whatsappAuth?.connected),
+    "WhatsApp",
+  );
+}
+
 async function postJson(url, payload) {
   const apiBase = await getApiBase();
   if (bridge?.apiPost) {
@@ -227,12 +270,17 @@ function renderOverview(data) {
     ...(data.whatsapp || {}),
   };
 
-  el("clientCount").textContent = data.clients.length;
   el("chatCount").textContent = data.chats.length;
   el("dashboardAddress").textContent = `${data.config.dashboard_host}:${data.config.dashboard_port}`;
   el("folderBadge").textContent = data.config.cloud_folder_name;
+  el("heroScopePill").textContent = `${data.config.cloud_folder_name} scope`;
+  el("heroTelegramPill").textContent = telegramAuth.has_session ? "Telegram ready" : "Telegram login needed";
+  el("heroWhatsAppPill").textContent = whatsappAuth.connected
+    ? "WhatsApp connected"
+    : (whatsappAuth.has_session ? "WhatsApp reconnect needed" : "WhatsApp QR needed");
   el("telegramBadge").textContent = telegramAuth.has_session ? "Authorized" : "Needs login";
   el("whatsappBadge").textContent = whatsappAuth.connected ? "Connected" : (whatsappAuth.has_session ? "Reconnect needed" : "Needs QR");
+  syncConnectionChecks({ telegramAuth, whatsappAuth });
 
   el("configGrid").innerHTML = [
     ["Telegram Cloud folder", data.config.cloud_folder_name],
@@ -273,23 +321,6 @@ function renderOverview(data) {
         </div>
       `).join("")
     : '<div class="empty">No downstream client credentials have been issued yet.</div>';
-
-  el("clientList").innerHTML = data.clients.length
-    ? data.clients.map((client) => `
-        <div class="client">
-          <div class="row">
-            <div class="title">${esc(client.label)}</div>
-            <span class="pill">${client.authorized ? "authorized" : "pending"}</span>
-          </div>
-          <div class="meta">
-            ${esc(client.remote_addr)}<br />
-            connected ${esc(fmtDate(client.connected_at))}<br />
-            ${client.phone ? `phone ${esc(client.phone)}<br />` : ""}
-            key <span class="mono">${esc(client.key_id)}</span>
-          </div>
-        </div>
-      `).join("")
-    : '<div class="empty">No clients are connected right now.</div>';
 
   el("mcpGrid").innerHTML = [
     ["Endpoint", `http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
@@ -513,6 +544,7 @@ function renderTelegramAuth(state) {
     ...DEFAULT_TELEGRAM_AUTH,
     ...(state || {}),
   };
+  syncConnectionChecks({ telegramAuth: telegramAuthState });
 
   el("telegramPhone").value = telegramAuthState.pending_phone || telegramAuthState.phone || el("telegramPhone").value || "";
   el("telegramAuthStatus").innerHTML = `
@@ -556,6 +588,7 @@ function renderWhatsAppAuth(state) {
     ...DEFAULT_WHATSAPP_AUTH,
     ...(state || {}),
   };
+  syncConnectionChecks({ whatsappAuth: whatsappAuthState });
 
   const chats = Array.isArray(whatsappAuthState.chats) ? whatsappAuthState.chats : [];
   el("whatsappBadge").textContent = whatsappAuthState.connected ? "Connected" : (whatsappAuthState.has_session ? "Reconnect needed" : "Needs QR");
@@ -706,6 +739,7 @@ async function requestWhatsAppPairingCode(event) {
   const result = await postJson("/api/whatsapp/auth/request-pairing-code", {});
   renderWhatsAppAuth(result);
   setActiveSection("whatsapp");
+  setActiveWhatsAppPane("settings");
   setNotice(result.qr_available ? "WhatsApp QR refreshed. Scan it from Linked devices." : "WhatsApp login state refreshed.", "success");
   await loadOverview();
 }
@@ -729,6 +763,10 @@ document.querySelectorAll(".folder-button").forEach((node) => {
 
 document.querySelectorAll(".telegram-pane-button").forEach((node) => {
   node.addEventListener("click", () => setActiveTelegramPane(node.dataset.telegramPane));
+});
+
+document.querySelectorAll(".whatsapp-pane-button").forEach((node) => {
+  node.addEventListener("click", () => setActiveWhatsAppPane(node.dataset.whatsappPane));
 });
 
 el("telegramCredentialForm").addEventListener("submit", (event) => {
