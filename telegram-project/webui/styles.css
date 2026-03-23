@@ -393,6 +393,7 @@ h1 {
 
 .telegram-pane-button,
 .whatsapp-pane-button,
+.imessage-pane-button,
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -406,6 +407,7 @@ h1 {
 
 .telegram-pane-button:disabled,
 .whatsapp-pane-button:disabled,
+.imessage-pane-button:disabled,
 .primary-button:disabled,
 .secondary-button:disabled,
 .danger-button:disabled {
@@ -416,7 +418,8 @@ h1 {
 }
 
 .telegram-pane-button,
-.whatsapp-pane-button {
+.whatsapp-pane-button,
+.imessage-pane-button {
   background: transparent;
   color: var(--muted);
   border-color: transparent;
@@ -425,6 +428,7 @@ h1 {
 
 .telegram-pane-button:hover,
 .whatsapp-pane-button:hover,
+.imessage-pane-button:hover,
 .primary-button:hover,
 .secondary-button:hover,
 .danger-button:hover {
@@ -432,7 +436,8 @@ h1 {
 }
 
 .telegram-pane-button.active,
-.whatsapp-pane-button.active {
+.whatsapp-pane-button.active,
+.imessage-pane-button.active {
   background: rgba(255, 255, 255, 0.88);
   border-color: rgba(175, 99, 66, 0.18);
   color: var(--ink);
@@ -440,12 +445,14 @@ h1 {
 }
 
 .telegram-pane,
-.whatsapp-pane {
+.whatsapp-pane,
+.imessage-pane {
   display: none;
 }
 
 .telegram-pane.active,
-.whatsapp-pane.active {
+.whatsapp-pane.active,
+.imessage-pane.active {
   display: block;
 }
 

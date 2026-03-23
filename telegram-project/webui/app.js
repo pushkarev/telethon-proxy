@@ -1,10 +1,17 @@
 let selectedPeerId = null;
 let selectedWhatsAppJid = null;
+let selectedIMessageChatId = null;
 let activeSection = "configuration";
 let activeTelegramPane = "chats";
 let activeWhatsAppPane = "chats";
+let activeIMessagePane = "chats";
 let telegramAuthState = null;
 let whatsappAuthState = null;
+let imessageAuthState = null;
+let desktopRuntimeState = {
+  backgroundOwner: "external",
+  platform: "unknown",
+};
 
 const bridge = window.telethonProxy || null;
 const FALLBACK_API_BASE = "http://127.0.0.1:8788";
@@ -38,6 +45,21 @@ const DEFAULT_WHATSAPP_AUTH = {
   auth_dir: "",
 };
 
+const DEFAULT_IMESSAGE_AUTH = {
+  available: true,
+  connected: false,
+  has_session: false,
+  messages_app_accessible: false,
+  database_accessible: false,
+  messages_app_error: null,
+  database_error: null,
+  automation_hint: "",
+  db_path: "",
+  accounts: [],
+  chats: [],
+  last_error: null,
+};
+
 function el(id) { return document.getElementById(id); }
 
 function formatApiError(url, status, payload) {
@@ -46,6 +68,9 @@ function formatApiError(url, status, payload) {
   }
   if (status === 404 && String(url).startsWith("/api/whatsapp/auth")) {
     return "WhatsApp support needs the newer background service. Restart the app or local proxy service and try again.";
+  }
+  if (status === 404 && String(url).startsWith("/api/imessage/auth")) {
+    return "iMessage support needs the newer background service. Restart the app or local proxy service and try again.";
   }
   return payload?.error || `Request failed with status ${status}`;
 }
@@ -146,6 +171,16 @@ function setActiveWhatsAppPane(pane) {
   });
 }
 
+function setActiveIMessagePane(pane) {
+  activeIMessagePane = pane;
+  document.querySelectorAll(".imessage-pane-button").forEach((node) => {
+    node.classList.toggle("active", node.dataset.imessagePane === pane);
+  });
+  document.querySelectorAll(".imessage-pane").forEach((node) => {
+    node.classList.toggle("active", node.dataset.imessagePanePanel === pane);
+  });
+}
+
 function setConnectionCheck(id, connected, label) {
   const node = el(id);
   if (!node) {
@@ -165,6 +200,7 @@ function setConnectionCheck(id, connected, label) {
 function syncConnectionChecks({
   telegramAuth = telegramAuthState,
   whatsappAuth = whatsappAuthState,
+  imessageAuth = imessageAuthState,
 } = {}) {
   setConnectionCheck(
     "telegramConnectionCheck",
@@ -175,6 +211,11 @@ function syncConnectionChecks({
     "whatsappConnectionCheck",
     Boolean(whatsappAuth?.connected),
     "WhatsApp",
+  );
+  setConnectionCheck(
+    "imessageConnectionCheck",
+    Boolean(imessageAuth?.connected),
+    "iMessage",
   );
 }
 
@@ -224,6 +265,21 @@ async function getApiBase() {
   return apiBasePromise;
 }
 
+async function loadDesktopRuntime() {
+  if (!bridge?.runtimeInfo) {
+    return desktopRuntimeState;
+  }
+  try {
+    desktopRuntimeState = {
+      ...desktopRuntimeState,
+      ...(await bridge.runtimeInfo()),
+    };
+  } catch {
+    // Leave the default runtime info in place when running outside Electron.
+  }
+  return desktopRuntimeState;
+}
+
 async function loadOverview() {
   const raw = await getJson("/api/overview");
   const data = {
@@ -236,6 +292,10 @@ async function loadOverview() {
       ...DEFAULT_WHATSAPP_AUTH,
       ...(raw.whatsapp || {}),
     },
+    imessage: {
+      ...DEFAULT_IMESSAGE_AUTH,
+      ...(raw.imessage || {}),
+    },
   };
 
   renderOverview(data);
@@ -243,6 +303,7 @@ async function loadOverview() {
   renderApis(data.apis);
   renderTelegramAuth(data.telegram_auth);
   renderWhatsAppAuth(data.whatsapp);
+  renderIMessageAuth(data.imessage);
 
   if (!selectedPeerId && data.chats.length) {
     selectedPeerId = data.chats[0].peer_id;
@@ -258,6 +319,14 @@ async function loadOverview() {
   } else if (selectedWhatsAppJid) {
     await loadWhatsAppChat(selectedWhatsAppJid);
   }
+
+  const imessageChats = Array.isArray(data.imessage.chats) ? data.imessage.chats : [];
+  if (!selectedIMessageChatId && imessageChats.length) {
+    selectedIMessageChatId = imessageChats[0].chat_id;
+    await loadIMessageChat(selectedIMessageChatId);
+  } else if (selectedIMessageChatId) {
+    await loadIMessageChat(selectedIMessageChatId);
+  }
 }
 
 function renderOverview(data) {
@@ -269,26 +338,37 @@ function renderOverview(data) {
     ...DEFAULT_WHATSAPP_AUTH,
     ...(data.whatsapp || {}),
   };
+  const imessageAuth = {
+    ...DEFAULT_IMESSAGE_AUTH,
+    ...(data.imessage || {}),
+  };
   const telegramChatCount = Array.isArray(data.chats) ? data.chats.length : 0;
   const whatsappChatCount = Array.isArray(whatsappAuth.chats) ? whatsappAuth.chats.length : 0;
+  const imessageChatCount = Array.isArray(imessageAuth.chats) ? imessageAuth.chats.length : 0;
 
-  el("chatCount").textContent = telegramChatCount;
+  el("chatCount").textContent = telegramChatCount + whatsappChatCount + imessageChatCount;
   el("dashboardAddress").textContent = `${data.config.dashboard_host}:${data.config.dashboard_port}`;
   el("folderBadge").textContent = data.config.cloud_folder_name;
   el("heroScopePill").textContent = `${data.config.cloud_folder_name} scope`;
   el("telegramFolderName").textContent = `Telegram (${telegramChatCount})`;
   el("whatsappFolderName").textContent = `WhatsApp (${whatsappChatCount})`;
+  el("imessageFolderName").textContent = `Messages (${imessageChatCount})`;
   el("heroTelegramPill").textContent = telegramAuth.has_session ? "Telegram ready" : "Telegram login needed";
   el("heroWhatsAppPill").textContent = whatsappAuth.connected
     ? "WhatsApp connected"
     : (whatsappAuth.has_session ? "WhatsApp reconnect needed" : "WhatsApp QR needed");
+  el("heroIMessagePill").textContent = imessageAuth.connected
+    ? "Messages connected"
+    : (imessageAuth.messages_app_accessible ? "Messages local access" : "Messages permission needed");
   el("telegramBadge").textContent = telegramAuth.has_session ? "Authorized" : "Needs login";
   el("whatsappBadge").textContent = whatsappAuth.connected ? "Connected" : (whatsappAuth.has_session ? "Reconnect needed" : "Needs QR");
-  syncConnectionChecks({ telegramAuth, whatsappAuth });
+  el("imessageBadge").textContent = imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed");
+  syncConnectionChecks({ telegramAuth, whatsappAuth, imessageAuth });
 
   el("configGrid").innerHTML = [
     ["Telegram Cloud folder", data.config.cloud_folder_name],
     ["WhatsApp Cloud label", data.config.whatsapp_cloud_label_name || "Cloud"],
+    ["Messages history DB", data.config.imessage_db_path || "default"],
     ["Background API", `${data.config.dashboard_host}:${data.config.dashboard_port}`],
     ["MCP endpoint", `${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
     ["Reconnect backoff", `${data.config.upstream_reconnect_min_delay}s -> ${data.config.upstream_reconnect_max_delay}s`],
@@ -349,8 +429,8 @@ function renderOverview(data) {
     <div class="meta">
       The bearer token stays hidden in the app. Use copy when you need it, or revoke it to invalidate the current token and copy a fresh one.<br />
       Example endpoint: <span class="mono">${esc(`http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`)}</span><br />
-      Suggested tools: <span class="mono">telegram.list_chats</span>, <span class="mono">telegram.get_messages</span>, <span class="mono">whatsapp.list_chats</span>, <span class="mono">whatsapp.get_messages</span>, <span class="mono">whatsapp.send_message</span><br />
-      Resources: <span class="mono">telegram://config</span>, <span class="mono">telegram://chat/&lt;peer_id&gt;</span>, <span class="mono">whatsapp://config</span>, <span class="mono">whatsapp://chat/&lt;jid&gt;</span><br />
+      Suggested tools: <span class="mono">telegram.list_chats</span>, <span class="mono">whatsapp.list_chats</span>, <span class="mono">imessage.list_chats</span>, <span class="mono">imessage.get_messages</span>, <span class="mono">imessage.send_message</span><br />
+      Resources: <span class="mono">telegram://config</span>, <span class="mono">whatsapp://config</span>, <span class="mono">imessage://config</span>, <span class="mono">imessage://chat/&lt;chat_id&gt;</span><br />
       Subscriptions: open SSE with <span class="mono">Mcp-Session-Id</span> and subscribe to <span class="mono">telegram://updates</span> or <span class="mono">telegram://chat/&lt;peer_id&gt;</span>
     </div>
     <div class="auth-actions">
@@ -399,7 +479,7 @@ function renderOverview(data) {
 
   if (data.error) {
     setNotice(data.error, "error");
-  } else if (!telegramAuth.last_error && !whatsappAuth.last_error) {
+  } else if (!telegramAuth.last_error && !whatsappAuth.last_error && !imessageAuth.last_error) {
     setNotice("");
   }
 }
@@ -533,6 +613,37 @@ function renderWhatsAppChats(chats) {
   });
 }
 
+function renderIMessageChats(chats) {
+  if (!chats.length) {
+    selectedIMessageChatId = null;
+  }
+
+  el("imessageChatList").innerHTML = chats.length
+    ? chats.map((chat) => `
+        <div class="chat ${selectedIMessageChatId === chat.chat_id ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}">
+          <div class="row">
+            <div class="title">${esc(chat.title)}</div>
+            <span class="pill">${esc(chat.kind)}</span>
+          </div>
+          <div class="meta">
+            ${esc(chat.chat_id)}<br />
+            ${chat.participants?.length ? `participants ${esc(chat.participants.join(", "))}<br />` : ""}
+            ${chat.service_type ? `service ${esc(chat.service_type)}<br />` : ""}
+            ${chat.last_message_at ? `last ${esc(fmtDate(chat.last_message_at))}` : "history unavailable or no recent messages"}
+          </div>
+        </div>
+      `).join("")
+    : '<div class="empty">No local Messages chats are currently visible.</div>';
+
+  document.querySelectorAll("#imessageChatList .chat").forEach((node) => {
+    node.addEventListener("click", async () => {
+      selectedIMessageChatId = node.dataset.chatId;
+      renderIMessageChats(chats);
+      await loadIMessageChat(selectedIMessageChatId);
+    });
+  });
+}
+
 function renderMessageTimeline(messages, {
   headingId,
   kindId,
@@ -556,7 +667,23 @@ function renderMessageTimeline(messages, {
 
   let lastDay = null;
   const html = [];
-  for (const message of messages.slice().reverse()) {
+  const orderedMessages = messages
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      const leftDate = left.message?.date ? new Date(left.message.date).getTime() : Number.NaN;
+      const rightDate = right.message?.date ? new Date(right.message.date).getTime() : Number.NaN;
+      const leftValid = Number.isFinite(leftDate);
+      const rightValid = Number.isFinite(rightDate);
+      if (leftValid && rightValid && leftDate !== rightDate) {
+        return leftDate - rightDate;
+      }
+      if (leftValid !== rightValid) {
+        return leftValid ? -1 : 1;
+      }
+      return left.index - right.index;
+    })
+    .map(({ message }) => message);
+  for (const message of orderedMessages) {
     const day = fmtDay(message.date);
     if (day && day !== lastDay) {
       html.push(`<div class="day-stamp">${esc(day)}</div>`);
@@ -631,6 +758,42 @@ async function loadWhatsAppChat(jid) {
     kind: data.chat ? data.chat.kind : null,
     meta: data.chat
       ? `${esc(data.chat.jid)}${data.chat.labels?.length ? ` · labels ${esc(data.chat.labels.join(", "))}` : ""}`
+      : null,
+  });
+}
+
+async function loadIMessageChat(chatId) {
+  if (!chatId) {
+    return;
+  }
+  const data = await getJson(`/api/imessage/chat?chat_id=${encodeURIComponent(chatId)}`);
+  if (data.error) {
+    renderMessageTimeline([], {
+      headingId: "imessageMessageHeading",
+      kindId: "imessageChatKindPill",
+      metaId: "imessageChatScreenMeta",
+      listId: "imessageMessageList",
+      fallbackHeading: "Messages",
+      fallbackKind: "chat",
+      fallbackMeta: esc(data.error),
+      title: null,
+      kind: null,
+      meta: null,
+    });
+    return;
+  }
+  renderMessageTimeline(data.messages || [], {
+    headingId: "imessageMessageHeading",
+    kindId: "imessageChatKindPill",
+    metaId: "imessageChatScreenMeta",
+    listId: "imessageMessageList",
+    fallbackHeading: "Messages",
+    fallbackKind: "chat",
+    fallbackMeta: "Pick a Messages chat to inspect recent local history.",
+    title: data.chat ? data.chat.title : null,
+    kind: data.chat ? data.chat.kind : null,
+    meta: data.chat
+      ? `${esc(data.chat.chat_id)}${data.chat.participants?.length ? ` · participants ${esc(data.chat.participants.join(", "))}` : ""}`
       : null,
   });
 }
@@ -738,12 +901,105 @@ function renderWhatsAppAuth(state) {
   }
 }
 
+function renderIMessageAuth(state) {
+  imessageAuthState = {
+    ...DEFAULT_IMESSAGE_AUTH,
+    ...(state || {}),
+  };
+  syncConnectionChecks({ imessageAuth: imessageAuthState });
+
+  const chats = Array.isArray(imessageAuthState.chats) ? imessageAuthState.chats : [];
+  const accounts = Array.isArray(imessageAuthState.accounts) ? imessageAuthState.accounts : [];
+  el("imessageBadge").textContent = imessageAuthState.connected ? "Connected" : (imessageAuthState.messages_app_accessible ? "Local access" : "Permission needed");
+  el("imessageAuthStatus").innerHTML = `
+    <div class="row">
+      <div class="title">Bridge status</div>
+      <span class="pill">${imessageAuthState.connected ? "connected" : "local-only"}</span>
+    </div>
+    <div class="kv">
+      <div>Messages automation</div><div>${imessageAuthState.messages_app_accessible ? "available" : "blocked"}</div>
+      <div>History database</div><div>${imessageAuthState.database_accessible ? "available" : "blocked"}</div>
+      <div>Accounts</div><div>${esc(accounts.length)}</div>
+      <div>Visible chats</div><div>${esc(chats.length)}</div>
+      <div>History path</div><div>${esc(imessageAuthState.db_path || "default")}</div>
+    </div>
+    ${accounts.length ? `<div class="meta">Messages accounts: ${esc(accounts.map((account) => `${account.description || account.id}${account.service_type ? ` (${account.service_type})` : ""}`).join(", "))}</div>` : ""}
+    ${imessageAuthState.automation_hint ? `<div class="meta">${esc(imessageAuthState.automation_hint)}</div>` : ""}
+    ${!imessageAuthState.database_accessible ? `
+      <div class="row">
+        <button type="button" class="secondary-button compact-button" id="openIMessageFilesAccessButton">Open Full Disk Access</button>
+        <button type="button" class="secondary-button compact-button" id="openIMessageAutomationButton">Open Automation</button>
+        <button type="button" class="secondary-button compact-button" id="copyIMessageDbPathButton">Copy history path</button>
+      </div>
+    ` : ""}
+    ${imessageAuthState.messages_app_error ? `<div class="inline-notice">${esc(imessageAuthState.messages_app_error)}</div>` : ""}
+    ${!imessageAuthState.messages_app_error && imessageAuthState.database_error ? `<div class="inline-notice">${esc(imessageAuthState.database_error)}</div>` : ""}
+    ${!imessageAuthState.database_accessible && desktopRuntimeState.backgroundOwner === "external"
+      ? `<div class="inline-notice">This window is attached to an already-running background service. Grant the permission to that service context, or stop it and relaunch the desktop app so Telethon Proxy can own the local Messages reader.</div>`
+      : ""}
+  `;
+
+  const openFilesAccessButton = document.getElementById("openIMessageFilesAccessButton");
+  if (openFilesAccessButton) {
+    openFilesAccessButton.addEventListener("click", async () => {
+      try {
+        if (!bridge?.openSystemSettings) {
+          setNotice("Open the desktop app to jump directly to the macOS privacy settings.", "error");
+          return;
+        }
+        await bridge.openSystemSettings("files");
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      }
+    });
+  }
+
+  const openAutomationButton = document.getElementById("openIMessageAutomationButton");
+  if (openAutomationButton) {
+    openAutomationButton.addEventListener("click", async () => {
+      try {
+        if (!bridge?.openSystemSettings) {
+          setNotice("Open the desktop app to jump directly to the macOS privacy settings.", "error");
+          return;
+        }
+        await bridge.openSystemSettings("automation");
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      }
+    });
+  }
+
+  const copyDbPathButton = document.getElementById("copyIMessageDbPathButton");
+  if (copyDbPathButton) {
+    copyDbPathButton.addEventListener("click", async () => {
+      try {
+        await copyText(imessageAuthState.db_path || "~/Library/Messages/chat.db");
+        setNotice("Copied the Messages history path.", "success");
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      }
+    });
+  }
+
+  renderIMessageChats(chats);
+  if (!selectedIMessageChatId) {
+    el("imessageMessageHeading").textContent = "Messages";
+    el("imessageChatKindPill").textContent = "chat";
+    el("imessageChatScreenMeta").textContent = "Pick a Messages chat to inspect recent local history.";
+    el("imessageMessageList").innerHTML = '<div class="empty">No Messages chat is selected yet.</div>';
+  }
+}
+
 async function refreshTelegramAuth() {
   renderTelegramAuth(await getJson("/api/telegram/auth"));
 }
 
 async function refreshWhatsAppAuth() {
   renderWhatsAppAuth(await getJson("/api/whatsapp/auth"));
+}
+
+async function refreshIMessageAuth() {
+  renderIMessageAuth(await getJson("/api/imessage/auth"));
 }
 
 async function saveTelegramCredentials(event) {
@@ -882,6 +1138,10 @@ document.querySelectorAll(".whatsapp-pane-button").forEach((node) => {
   node.addEventListener("click", () => setActiveWhatsAppPane(node.dataset.whatsappPane));
 });
 
+document.querySelectorAll(".imessage-pane-button").forEach((node) => {
+  node.addEventListener("click", () => setActiveIMessagePane(node.dataset.imessagePane));
+});
+
 el("telegramCredentialForm").addEventListener("submit", (event) => {
   saveTelegramCredentials(event).catch((error) => setNotice(error.message || String(error), "error"));
 });
@@ -923,12 +1183,16 @@ el("mtprotoEnabledCheckbox").addEventListener("change", async (event) => {
   }
 });
 
-loadOverview().catch((error) => {
-  setNotice(error.message || String(error), "error");
-});
+loadDesktopRuntime()
+  .then(() => loadOverview())
+  .catch((error) => {
+    setNotice(error.message || String(error), "error");
+  });
 
 refreshTelegramAuth().catch(() => {});
 refreshWhatsAppAuth().catch(() => {});
+refreshIMessageAuth().catch(() => {});
 setInterval(() => {
   refreshWhatsAppAuth().catch(() => {});
+  refreshIMessageAuth().catch(() => {});
 }, 5000);

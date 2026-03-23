@@ -13,6 +13,7 @@ from urllib.parse import quote, unquote, urlsplit
 from telethon import types, utils
 
 from .config import ProxyConfig
+from .imessage_bridge import IMessageBridge, IMessageBridgeError
 from .update_bus import UpdateEnvelope
 from .upstream import UpstreamAdapter, UpstreamUnavailableError
 from .whatsapp_bridge import WhatsAppBridge, WhatsAppBridgeError
@@ -45,10 +46,18 @@ class McpSession:
 
 
 class McpServer:
-    def __init__(self, config: ProxyConfig, upstream: UpstreamAdapter, *, whatsapp: WhatsAppBridge | None = None) -> None:
+    def __init__(
+        self,
+        config: ProxyConfig,
+        upstream: UpstreamAdapter,
+        *,
+        whatsapp: WhatsAppBridge | None = None,
+        imessage: IMessageBridge | None = None,
+    ) -> None:
         self.config = config
         self.upstream = upstream
         self.whatsapp = whatsapp
+        self.imessage = imessage
         self._server: asyncio.AbstractServer | None = None
         self._sessions: dict[str, McpSession] = {}
         self._recent_updates: deque[dict[str, object]] = deque(maxlen=max(config.update_buffer_size, 200))
@@ -208,7 +217,8 @@ class McpServer:
                             "version": "0.2.0",
                         },
                         "instructions": (
-                            "Cloud-scoped Telegram access plus WhatsApp chats carrying the Cloud label. "
+                            "Cloud-scoped Telegram access, WhatsApp chats carrying the Cloud label, "
+                            "and local iMessage chats from the Messages app. "
                             "Use resources/subscribe with an SSE GET stream to receive update notifications."
                         ),
                     },
@@ -239,6 +249,8 @@ class McpServer:
             return self._error(rpc_id, -32000, exc.message)
         except WhatsAppBridgeError as exc:
             return self._error(rpc_id, -32000, f"WhatsApp unavailable: {exc}")
+        except IMessageBridgeError as exc:
+            return self._error(rpc_id, -32000, f"iMessage unavailable: {exc}")
 
     async def _call_tool(self, params: dict[str, object]) -> dict[str, object]:
         name = str(params.get("name") or "")
@@ -298,6 +310,22 @@ class McpServer:
                 )
             elif name == "whatsapp.get_updates":
                 payload = await self._tool_whatsapp_get_updates(limit=int(arguments.get("limit", 50)))
+            elif name == "imessage.list_chats":
+                payload = await self._tool_imessage_list_chats(limit=int(arguments.get("limit", 100)))
+            elif name == "imessage.get_auth_status":
+                payload = await self._tool_imessage_get_auth_status()
+            elif name == "imessage.get_messages":
+                payload = await self._tool_imessage_get_messages(
+                    chat_id=self._require_imessage_chat_id(arguments),
+                    limit=int(arguments.get("limit", 50)),
+                )
+            elif name == "imessage.send_message":
+                payload = await self._tool_imessage_send_message(
+                    chat_id=self._require_imessage_chat_id(arguments),
+                    text=str(arguments.get("text") or ""),
+                )
+            elif name == "imessage.get_updates":
+                payload = await self._tool_imessage_get_updates(limit=int(arguments.get("limit", 50)))
             else:
                 raise McpHttpError(404, f"Unknown tool: {name}")
         except PermissionError as exc:
@@ -306,6 +334,8 @@ class McpServer:
             payload = {"ok": False, "error": f"Upstream unavailable: {exc}"}
         except WhatsAppBridgeError as exc:
             payload = {"ok": False, "error": f"WhatsApp unavailable: {exc}"}
+        except IMessageBridgeError as exc:
+            payload = {"ok": False, "error": f"iMessage unavailable: {exc}"}
 
         return {
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
@@ -386,6 +416,47 @@ class McpServer:
                         "description": f"Recent WhatsApp messages for {chat.get('title') or jid}.",
                     }
                 )
+        if self.imessage is not None:
+            resources.extend(
+                [
+                    {
+                        "uri": "imessage://config",
+                        "name": "iMessage configuration",
+                        "mimeType": "application/json",
+                        "description": "Local Messages app status, automation access, and history database state.",
+                    },
+                    {
+                        "uri": "imessage://chats",
+                        "name": "iMessage chats",
+                        "mimeType": "application/json",
+                        "description": "iMessage chats currently visible through the local Messages app.",
+                    },
+                    {
+                        "uri": "imessage://updates",
+                        "name": "iMessage updates",
+                        "mimeType": "application/json",
+                        "description": "Recent iMessage message events from the local Messages database.",
+                    },
+                ]
+            )
+            try:
+                status = await self.imessage.get_status(limit=500)
+            except IMessageBridgeError:
+                status = {"chats": []}
+            for chat in status.get("chats", []):
+                if not isinstance(chat, dict):
+                    continue
+                chat_id = str(chat.get("chat_id") or "")
+                if not chat_id:
+                    continue
+                resources.append(
+                    {
+                        "uri": f"imessage://chat/{quote(chat_id, safe='@.-_+;')}",
+                        "name": str(chat.get("title") or chat_id),
+                        "mimeType": "application/json",
+                        "description": f"Recent iMessage messages for {chat.get('title') or chat_id}.",
+                    }
+                )
         return resources
 
     async def _read_resource(self, params: dict[str, object]) -> dict[str, object]:
@@ -406,6 +477,17 @@ class McpServer:
             payload = await self._tool_whatsapp_get_updates(limit=100)
         elif uri.startswith("whatsapp://chat/"):
             payload = await self._tool_whatsapp_get_messages(jid=unquote(uri.removeprefix("whatsapp://chat/")), limit=50)
+        elif uri == "imessage://config":
+            payload = await self._resource_imessage_config()
+        elif uri == "imessage://chats":
+            payload = await self._tool_imessage_list_chats(limit=500)
+        elif uri == "imessage://updates":
+            payload = await self._tool_imessage_get_updates(limit=100)
+        elif uri.startswith("imessage://chat/"):
+            payload = await self._tool_imessage_get_messages(
+                chat_id=unquote(uri.removeprefix("imessage://chat/")),
+                limit=50,
+            )
         else:
             raise McpHttpError(404, f"Unknown resource: {uri}")
 
@@ -515,6 +597,35 @@ class McpServer:
         payload = await self.whatsapp.get_updates(limit=limit)
         return {"ok": True, "updates": payload.get("updates", [])}
 
+    async def _tool_imessage_list_chats(self, *, limit: int) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        payload = await self.imessage.get_chats(limit=limit)
+        return {"ok": True, "chats": payload.get("chats", [])}
+
+    async def _tool_imessage_get_auth_status(self) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        return await self.imessage.get_status(limit=50)
+
+    async def _tool_imessage_get_messages(self, *, chat_id: str, limit: int) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        payload = await self.imessage.get_chat(chat_id, limit=limit)
+        return {"ok": True, "chat": payload.get("chat"), "messages": payload.get("messages", [])}
+
+    async def _tool_imessage_send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        payload = await self.imessage.send_message(chat_id=chat_id, text=text)
+        return {"ok": True, "message": payload.get("message")}
+
+    async def _tool_imessage_get_updates(self, *, limit: int) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        payload = await self.imessage.get_updates(limit=limit)
+        return {"ok": True, "updates": payload.get("updates", [])}
+
     async def _resource_config(self) -> dict[str, object]:
         identity = await self.upstream.get_identity()
         whatsapp = None
@@ -523,6 +634,12 @@ class McpServer:
                 whatsapp = await self.whatsapp.get_status(limit=50)
             except WhatsAppBridgeError as exc:
                 whatsapp = {"ok": False, "last_error": str(exc)}
+        imessage = None
+        if self.imessage is not None:
+            try:
+                imessage = await self.imessage.get_status(limit=50)
+            except IMessageBridgeError as exc:
+                imessage = {"ok": False, "last_error": str(exc)}
         return {
             "ok": True,
             "upstream": identity,
@@ -540,12 +657,27 @@ class McpServer:
                 "api_id": self.config.downstream_api_id,
             },
             "whatsapp": whatsapp,
+            "imessage": imessage,
         }
 
     async def _resource_whatsapp_config(self) -> dict[str, object]:
         if self.whatsapp is None:
             raise McpHttpError(404, "WhatsApp bridge is unavailable")
         payload = await self.whatsapp.get_status(limit=200)
+        return {
+            "ok": True,
+            "bridge": payload,
+            "mcp": {
+                "host": self.config.mcp_host,
+                "port": self.config.mcp_port,
+                "path": self.config.mcp_path,
+            },
+        }
+
+    async def _resource_imessage_config(self) -> dict[str, object]:
+        if self.imessage is None:
+            raise McpHttpError(404, "iMessage bridge is unavailable")
+        payload = await self.imessage.get_status(limit=200)
         return {
             "ok": True,
             "bridge": payload,
@@ -693,6 +825,45 @@ class McpServer:
                 "description": "Fetch recent WhatsApp message events from chats carrying the Cloud label.",
                 "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
             },
+            {
+                "name": "imessage.list_chats",
+                "description": "List local iMessage chats visible in the Messages app.",
+                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}},
+            },
+            {
+                "name": "imessage.get_auth_status",
+                "description": "Get local iMessage integration status, including Messages automation and chat.db access.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "imessage.get_messages",
+                "description": "Get recent messages from one local iMessage chat.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["chat_id"],
+                    "properties": {
+                        "chat_id": {"type": "string", "description": "Messages chat identifier such as any;-;+15551234567 or any;+;chat..."},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                    },
+                },
+            },
+            {
+                "name": "imessage.send_message",
+                "description": "Send a text message into one local iMessage chat via the Messages app.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["chat_id", "text"],
+                    "properties": {
+                        "chat_id": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "imessage.get_updates",
+                "description": "Fetch recent iMessage message events from the local Messages database.",
+                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
+            },
         ]
 
     async def _fan_out_updates(self) -> None:
@@ -823,6 +994,12 @@ class McpServer:
             raise McpHttpError(400, "Missing required tool argument: jid")
         return jid
 
+    def _require_imessage_chat_id(self, arguments: dict[str, object]) -> str:
+        chat_id = str(arguments.get("chat_id") or "").strip()
+        if not chat_id:
+            raise McpHttpError(400, "Missing required tool argument: chat_id")
+        return chat_id
+
     def _optional_int(self, value: object) -> int | None:
         if value in (None, "", False):
             return None
@@ -841,6 +1018,10 @@ class McpServer:
         if uri == "whatsapp://config" or uri == "whatsapp://chats" or uri == "whatsapp://updates":
             return
         if uri.startswith("whatsapp://chat/"):
+            return
+        if uri == "imessage://config" or uri == "imessage://chats" or uri == "imessage://updates":
+            return
+        if uri.startswith("imessage://chat/"):
             return
         raise McpHttpError(404, f"Unknown resource: {uri}")
 

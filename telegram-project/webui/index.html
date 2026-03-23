@@ -14,12 +14,13 @@
         <div class="hero-head">
           <div>
             <h1>Telethon Proxy</h1>
-            <div class="sub">Telegram, WhatsApp, and MCP in one compact local console.</div>
+            <div class="sub">Telegram, WhatsApp, local Messages, and MCP in one compact local console.</div>
           </div>
           <div class="hero-ribbon">
             <span class="hero-pill" id="heroScopePill">Cloud scope</span>
             <span class="hero-pill" id="heroTelegramPill">Telegram</span>
             <span class="hero-pill" id="heroWhatsAppPill">WhatsApp</span>
+            <span class="hero-pill" id="heroIMessagePill">Messages</span>
           </div>
         </div>
         <div class="hero-stats">
@@ -57,6 +58,13 @@
             <span class="connection-check" id="whatsappConnectionCheck" hidden aria-hidden="true">✓</span>
           </div>
           <div class="folder-meta">Cloud-labeled chats, pairing-code auth, and the local Baileys bridge.</div>
+        </button>
+        <button class="folder-button" data-section="imessage">
+          <div class="folder-label-row">
+            <div class="folder-name" id="imessageFolderName">Messages</div>
+            <span class="connection-check" id="imessageConnectionCheck" hidden aria-hidden="true">✓</span>
+          </div>
+          <div class="folder-meta">Local Messages chats, AppleScript send access, and optional history from chat.db.</div>
         </button>
         <button class="folder-button" data-section="mcp">
           <div class="folder-name">MCP</div>
@@ -353,11 +361,77 @@
           </div>
         </section>
 
+        <section class="panel section-panel" data-section-panel="imessage">
+          <div class="section-head">
+            <div>
+              <h2>Messages</h2>
+              <div class="section-copy">Inspect local Messages chats, including iMessage, SMS, and RCS threads, plus automation state and history availability from the Messages database.</div>
+            </div>
+            <span class="badge" id="imessageBadge">Local access</span>
+          </div>
+          <div class="section-body">
+            <div class="telegram-shell">
+              <div class="telegram-nav">
+                <button class="imessage-pane-button active" data-imessage-pane="chats">Chats</button>
+                <button class="imessage-pane-button" data-imessage-pane="settings">Settings</button>
+              </div>
+
+              <section class="imessage-pane active" data-imessage-pane-panel="chats">
+                <div class="credential-card auth-guide">
+                  <div class="row">
+                    <div class="title">Local visibility rule</div>
+                    <span class="pill">Messages app</span>
+                  </div>
+                  <div class="meta">
+                    Local chat metadata comes from the <span class="mono">Messages</span> app. Recent history comes from <span class="mono">chat.db</span> when macOS Full Disk Access allows it. The view mirrors local Messages threads, including iMessage, SMS, and RCS where available.
+                  </div>
+                </div>
+
+                <div class="chat-shell whatsapp-chat-shell">
+                  <div class="chat-sidebar">
+                    <div class="sidebar-heading">
+                      <div class="section-kicker">Visible chats</div>
+                      <h3>Local Messages</h3>
+                    </div>
+                    <div class="chat-list" id="imessageChatList"></div>
+                  </div>
+                  <div class="chat-stage">
+                    <div class="chat-screen-head">
+                      <div class="row">
+                        <div class="title" id="imessageMessageHeading">Messages</div>
+                        <span class="pill" id="imessageChatKindPill">chat</span>
+                      </div>
+                      <div class="chat-screen-meta" id="imessageChatScreenMeta">Pick a Messages chat to inspect recent local history.</div>
+                    </div>
+                    <div class="message-list" id="imessageMessageList"></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="imessage-pane" data-imessage-pane-panel="settings">
+                <div class="settings-grid whatsapp-settings-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">macOS access</div>
+                      <span class="pill">Local only</span>
+                    </div>
+                    <div class="meta">
+                      The proxy uses <span class="mono">Messages</span> automation for chat enumeration and sending, plus <span class="mono">~/Library/Messages/chat.db</span> for history reads. macOS may require granting Automation and Full Disk Access to the app or background service that runs this proxy.
+                    </div>
+                  </div>
+
+                  <div class="credential-card" id="imessageAuthStatus"></div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <section class="panel section-panel" data-section-panel="mcp">
           <div class="section-head">
             <div>
               <h2>MCP</h2>
-              <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram resources available through it.</div>
+              <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram, WhatsApp, and Messages resources available through it.</div>
             </div>
             <span class="badge">Local tools + subscriptions</span>
           </div>

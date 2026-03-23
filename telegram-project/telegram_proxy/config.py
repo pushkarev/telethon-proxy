@@ -46,6 +46,7 @@ class ProxyConfig:
     whatsapp_port: int = 8792
     whatsapp_cloud_label_name: str = "Cloud"
     whatsapp_auth_dir: str = str(DEFAULT_CONFIG_HOME / "whatsapp-auth")
+    imessage_db_name: str = str(Path.home() / "Library" / "Messages" / "chat.db")
 
     @property
     def listen_host(self) -> str:
@@ -93,6 +94,10 @@ class ProxyConfig:
         path = Path(self.whatsapp_auth_dir).expanduser()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def imessage_db_path(self) -> Path:
+        return Path(self.imessage_db_name).expanduser()
 
     def save_mcp_settings(self) -> None:
         payload = {
@@ -153,6 +158,7 @@ class ProxyConfig:
             whatsapp_port=int(os.getenv("TP_WHATSAPP_PORT", "8792")),
             whatsapp_cloud_label_name=os.getenv("TP_WHATSAPP_CLOUD_LABEL", os.getenv("TP_CLOUD_FOLDER", "Cloud")),
             whatsapp_auth_dir=os.getenv("TP_WHATSAPP_AUTH_DIR", str(DEFAULT_CONFIG_HOME / "whatsapp-auth")),
+            imessage_db_name=os.getenv("TP_IMESSAGE_DB", str(Path.home() / "Library" / "Messages" / "chat.db")),
         )
 
     @staticmethod

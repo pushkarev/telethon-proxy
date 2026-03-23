@@ -235,6 +235,53 @@ class _FakeWhatsApp:
         return await self.get_status()
 
 
+class _FakeIMessage:
+    def __init__(self) -> None:
+        self.chats = [
+            {
+                "chat_id": "any;-;+15550000000",
+                "title": "Alice",
+                "kind": "dm",
+                "participants": ["+15550000000"],
+                "participant_count": 1,
+                "last_message_at": _now().isoformat(),
+                "last_message_text": "hello imessage",
+                "unread_count": 0,
+            }
+        ]
+
+    async def get_status(self, *, limit=500):
+        return {
+            "ok": True,
+            "available": True,
+            "connected": True,
+            "has_session": True,
+            "messages_app_accessible": True,
+            "database_accessible": False,
+            "database_error": "Full Disk Access required",
+            "accounts": [{"id": "account-1", "connection": "connected", "enabled": True, "service_type": "iMessage"}],
+            "chats": self.chats[:limit],
+            "db_path": "/Users/dmitry/Library/Messages/chat.db",
+            "last_error": "Full Disk Access required",
+        }
+
+    async def get_chat(self, chat_id, *, limit=80):
+        return {
+            "ok": True,
+            "chat": self.chats[0] if chat_id == self.chats[0]["chat_id"] else None,
+            "messages": [
+                {
+                    "id": "imsg-1",
+                    "chat_id": chat_id,
+                    "text": "hello imessage",
+                    "date": _now().isoformat(),
+                    "from_me": False,
+                    "kind": "text",
+                }
+            ][:limit],
+        }
+
+
 class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -254,6 +301,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.telegram_auth = _FakeTelegramAuth()
         self.secret_store = _FakeSecretStore()
         self.whatsapp = _FakeWhatsApp()
+        self.imessage = _FakeIMessage()
         self.mcp = _FakeMcp()
         self.server = ProxyDashboardServer(
             self.config,
@@ -263,6 +311,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
             self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
+            imessage=self.imessage,
             secret_store=self.secret_store,
         )
         await self.server.start()
@@ -298,6 +347,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["downstream_credentials"][0]["session_string"])
         self.assertEqual(payload["telegram_auth"]["keychain_backend"], "macOS Keychain")
         self.assertEqual(payload["whatsapp"]["chats"][0]["title"], "Cloud WA Chat")
+        self.assertEqual(payload["imessage"]["chats"][0]["title"], "Alice")
         self.assertTrue(payload["mcp"]["token_hidden"])
         self.assertTrue(payload["mcp"]["listening"])
         self.assertTrue(payload["mcp"]["bind_options"])
@@ -314,6 +364,12 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(body)
         self.assertEqual(payload["chat"]["title"], "Cloud WA Chat")
         self.assertEqual(payload["messages"][0]["text"], "hello whatsapp")
+
+        status, body = await self._get("/api/imessage/chat?chat_id=any%3B-%3B%2B15550000000")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["chat"]["title"], "Alice")
+        self.assertEqual(payload["messages"][0]["text"], "hello imessage")
 
     async def test_mcp_token_routes(self):
         status, body = await self._get("/api/mcp/token")
@@ -424,6 +480,13 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertFalse(payload["has_session"])
+
+    async def test_imessage_auth_route(self):
+        status, body = await self._get("/api/imessage/auth")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["connected"])
+        self.assertEqual(payload["chats"][0]["title"], "Alice")
 
     async def _get(self, path: str) -> tuple[int, str]:
         reader, writer = await asyncio.open_connection(self.config.dashboard_host, self.config.dashboard_port)

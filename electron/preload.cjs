@@ -11,7 +11,16 @@ contextBridge.exposeInMainWorld("telethonProxy", {
   backgroundApiBase() {
     return ipcRenderer.invoke("proxy:api-base");
   },
+  runtimeInfo() {
+    return ipcRenderer.invoke("proxy:get-runtime");
+  },
   copyText(value) {
     return ipcRenderer.invoke("proxy:copy-text", String(value || ""));
+  },
+  openSystemSettings(kind) {
+    return ipcRenderer.invoke("proxy:open-system-settings", String(kind || "files"));
+  },
+  showItemInFolder(targetPath) {
+    return ipcRenderer.invoke("proxy:show-item-in-folder", String(targetPath || ""));
   },
 });

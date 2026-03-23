@@ -24,6 +24,33 @@ let ownsBackgroundProcess = false;
 let tray = null;
 
 
+function ignoreBrokenPipe(error) {
+  if (error?.code === "EPIPE" || error?.code === "ERR_STREAM_DESTROYED") {
+    return;
+  }
+  throw error;
+}
+
+function safeStreamWrite(stream, chunk) {
+  if (!stream || typeof stream.write !== "function" || stream.destroyed || stream.writableEnded) {
+    return;
+  }
+  try {
+    stream.write(chunk);
+  } catch (error) {
+    ignoreBrokenPipe(error);
+  }
+}
+
+if (process.stdout?.on) {
+  process.stdout.on("error", ignoreBrokenPipe);
+}
+
+if (process.stderr?.on) {
+  process.stderr.on("error", ignoreBrokenPipe);
+}
+
+
 function backgroundEnv() {
   return {
     ...process.env,
@@ -69,10 +96,10 @@ function startBackgroundService() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   backgroundProcess.stdout.on("data", (chunk) => {
-    process.stdout.write(`[proxy] ${chunk}`);
+    safeStreamWrite(process.stdout, `[proxy] ${chunk}`);
   });
   backgroundProcess.stderr.on("data", (chunk) => {
-    process.stderr.write(`[proxy] ${chunk}`);
+    safeStreamWrite(process.stderr, `[proxy] ${chunk}`);
   });
   backgroundProcess.on("exit", async (code, signal) => {
     backgroundProcess = null;
@@ -279,6 +306,29 @@ function createTray() {
   return tray;
 }
 
+function currentBackgroundOwner() {
+  return ownsBackgroundProcess ? "app" : "external";
+}
+
+async function openSystemSettingsPane(kind = "files") {
+  if (process.platform !== "darwin") {
+    return { ok: false, opened: false, error: "System settings shortcuts are only available on macOS." };
+  }
+  const anchor = kind === "automation" ? "Privacy_Automation" : "Privacy_AllFiles";
+  const target = `x-apple.systempreferences:com.apple.preference.security?${anchor}`;
+  await shell.openExternal(target);
+  return { ok: true, opened: true };
+}
+
+async function revealLocalPath(targetPath) {
+  const resolved = path.resolve(String(targetPath || ""));
+  if (!resolved) {
+    return { ok: false, revealed: false, error: "A path is required." };
+  }
+  shell.showItemInFolder(resolved);
+  return { ok: true, revealed: true, path: resolved };
+}
+
 
 app.on("before-quit", () => {
   isQuitting = true;
@@ -288,10 +338,17 @@ app.on("before-quit", () => {
 });
 
 ipcMain.handle("proxy:api-base", () => BACKGROUND_API_BASE);
+ipcMain.handle("proxy:get-runtime", () => ({
+  apiBase: BACKGROUND_API_BASE,
+  backgroundOwner: currentBackgroundOwner(),
+  platform: process.platform,
+}));
 ipcMain.handle("proxy:copy-text", (_event, value) => {
   clipboard.writeText(String(value || ""));
   return { ok: true };
 });
+ipcMain.handle("proxy:open-system-settings", async (_event, kind) => openSystemSettingsPane(String(kind || "files")));
+ipcMain.handle("proxy:show-item-in-folder", async (_event, targetPath) => revealLocalPath(String(targetPath || "")));
 
 async function readJsonOrText(response) {
   const text = await response.text();

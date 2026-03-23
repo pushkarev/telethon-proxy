@@ -164,6 +164,74 @@ class _FakeWhatsApp:
         }
 
 
+class _FakeIMessage:
+    def __init__(self) -> None:
+        self.chat = {
+            "chat_id": "any;-;+15550000000",
+            "title": "Alice",
+            "kind": "dm",
+            "participants": ["+15550000000"],
+            "participant_count": 1,
+            "last_message_at": _now().isoformat(),
+            "last_message_text": "hello imessage",
+            "unread_count": 0,
+        }
+        self.messages = [
+            {
+                "id": "imsg-1",
+                "chat_id": self.chat["chat_id"],
+                "text": "hello imessage",
+                "date": _now().isoformat(),
+                "from_me": False,
+                "kind": "text",
+            }
+        ]
+
+    async def get_status(self, *, limit=500):
+        return {
+            "ok": True,
+            "available": True,
+            "connected": True,
+            "has_session": True,
+            "messages_app_accessible": True,
+            "database_accessible": True,
+            "accounts": [{"id": "account-1", "connection": "connected", "enabled": True, "service_type": "iMessage"}],
+            "chats": [self.chat][:limit],
+            "last_error": None,
+        }
+
+    async def get_chats(self, *, limit=200):
+        return {"ok": True, "chats": [self.chat][:limit]}
+
+    async def get_chat(self, chat_id: str, *, limit=50):
+        return {"ok": True, "chat": self.chat if chat_id == self.chat["chat_id"] else None, "messages": self.messages[:limit]}
+
+    async def get_updates(self, *, limit=50):
+        return {
+            "ok": True,
+            "updates": [
+                {
+                    "kind": "new_message",
+                    "chat_id": self.chat["chat_id"],
+                    "message_id": self.messages[-1]["id"],
+                    "message": self.messages[-1],
+                }
+            ][:limit],
+        }
+
+    async def send_message(self, *, chat_id: str, text: str):
+        message = {
+            "id": "imsg-2",
+            "chat_id": chat_id,
+            "text": text,
+            "date": _now().isoformat(),
+            "from_me": True,
+            "kind": "text",
+        }
+        self.messages.append(message)
+        return {"ok": True, "message": message}
+
+
 class McpServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -175,7 +243,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             mtproto_port=9001,
             downstream_api_id=900000,
         )
-        self.server = McpServer(self.config, _FakeUpstream(), whatsapp=_FakeWhatsApp())
+        self.server = McpServer(self.config, _FakeUpstream(), whatsapp=_FakeWhatsApp(), imessage=_FakeIMessage())
         await self.server.start()
 
     async def asyncTearDown(self) -> None:
@@ -218,6 +286,9 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("whatsapp.list_chats", tool_names)
         self.assertIn("whatsapp.get_auth_status", tool_names)
         self.assertIn("whatsapp.get_messages", tool_names)
+        self.assertIn("imessage.list_chats", tool_names)
+        self.assertIn("imessage.get_auth_status", tool_names)
+        self.assertIn("imessage.get_messages", tool_names)
 
         status, payload, _ = await self._request(
             "POST",
@@ -254,6 +325,24 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["result"]["structuredContent"]["ok"])
         self.assertEqual(payload["result"]["structuredContent"]["messages"][0]["text"], "hello wa")
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 32,
+                "method": "tools/call",
+                "params": {
+                    "name": "imessage.get_messages",
+                    "arguments": {"chat_id": "any;-;+15550000000", "limit": 10},
+                },
+            },
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["result"]["structuredContent"]["ok"])
+        self.assertEqual(payload["result"]["structuredContent"]["messages"][0]["text"], "hello imessage")
 
         status, payload, _ = await self._request(
             "POST",

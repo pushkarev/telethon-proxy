@@ -7,6 +7,7 @@ from .config import ProxyConfig
 from .dashboard_service import ProxyDashboardServer
 from .downstream_auth import DownstreamAuthService
 from .downstream_registry import DownstreamRegistry
+from .imessage_bridge import IMessageBridge
 from .mcp_service import McpServer
 from .mtproto_service import MTProtoProxyServer
 from .secrets_store import MacOSSecretStore
@@ -30,11 +31,12 @@ class ProxyService:
             cloud_label_name=config.whatsapp_cloud_label_name,
             auth_dir=config.whatsapp_auth_path,
         )
+        self.imessage = IMessageBridge(db_path=config.imessage_db_path)
         self.telegram_auth = TelegramAuthService(config, self.upstream, secret_store=self.secret_store)
         self.auth = DownstreamAuthService(config)
         self.registry = DownstreamRegistry(config.downstream_registry_path)
         self.mtproto = MTProtoProxyServer(config, self.upstream, self.auth, self.registry)
-        self.mcp = McpServer(config, self.upstream, whatsapp=self.whatsapp)
+        self.mcp = McpServer(config, self.upstream, whatsapp=self.whatsapp, imessage=self.imessage)
         self.dashboard = ProxyDashboardServer(
             config,
             self.upstream,
@@ -43,6 +45,7 @@ class ProxyService:
             self.mcp,
             self.telegram_auth,
             whatsapp=self.whatsapp,
+            imessage=self.imessage,
             secret_store=self.secret_store,
         )
 
@@ -64,6 +67,7 @@ class ProxyService:
         await self.mcp.stop()
         await self.mtproto.stop()
         await self.telegram_auth.close()
+        await self.imessage.close()
         await self.whatsapp.close()
         await self.upstream.stop()
 

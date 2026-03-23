@@ -12,6 +12,7 @@ from telethon import utils
 
 from .config import ProxyConfig
 from .downstream_registry import DownstreamRegistry
+from .imessage_bridge import IMessageBridge, IMessageBridgeError
 from .mcp_service import McpServer
 from .mtproto_service import MTProtoProxyServer
 from .secrets_store import MacOSSecretStore
@@ -57,6 +58,7 @@ class ProxyDashboardServer:
         mcp: McpServer,
         telegram_auth=None,
         whatsapp: WhatsAppBridge | None = None,
+        imessage: IMessageBridge | None = None,
         secret_store: MacOSSecretStore | None = None,
     ) -> None:
         self.config = config
@@ -66,6 +68,7 @@ class ProxyDashboardServer:
         self.mcp = mcp
         self.telegram_auth = telegram_auth
         self.whatsapp = whatsapp
+        self.imessage = imessage
         self.secret_store = secret_store or MacOSSecretStore()
         self._server: asyncio.AbstractServer | None = None
 
@@ -123,10 +126,18 @@ class ProxyDashboardServer:
             if method == "GET" and url.path == "/api/whatsapp/auth":
                 await self._write_json(writer, 200, await self._build_whatsapp_auth())
                 return
+            if method == "GET" and url.path == "/api/imessage/auth":
+                await self._write_json(writer, 200, await self._build_imessage_auth())
+                return
             if method == "GET" and url.path == "/api/whatsapp/chat":
                 params = parse_qs(url.query)
                 jid = params.get("jid", [""])[0]
                 await self._write_json(writer, 200, await self._build_whatsapp_chat(jid))
+                return
+            if method == "GET" and url.path == "/api/imessage/chat":
+                params = parse_qs(url.query)
+                chat_id = params.get("chat_id", [""])[0]
+                await self._write_json(writer, 200, await self._build_imessage_chat(chat_id))
                 return
             if method == "GET" and url.path == "/api/mcp/token":
                 await self._write_json(writer, 200, await self._build_mcp_token())
@@ -166,6 +177,7 @@ class ProxyDashboardServer:
 
         issued_clients = self.registry.list_clients()
         whatsapp = await self._build_whatsapp_auth()
+        imessage = await self._build_imessage_auth()
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "error": error,
@@ -187,6 +199,7 @@ class ProxyDashboardServer:
                 "downstream_login_code": self.config.downstream_login_code,
                 "upstream_reconnect_min_delay": self.config.upstream_reconnect_min_delay,
                 "upstream_reconnect_max_delay": self.config.upstream_reconnect_max_delay,
+                "imessage_db_path": str(self.config.imessage_db_path),
             },
             "upstream": await self._load_upstream_identity(error is None),
             "clients": self.mtproto.active_connections_snapshot(),
@@ -205,6 +218,7 @@ class ProxyDashboardServer:
             },
             "telegram_auth": await self._build_telegram_auth(),
             "whatsapp": whatsapp,
+            "imessage": imessage,
             "chats": chats,
             "apis": SUPPORTED_APIS,
         }
@@ -255,6 +269,39 @@ class ProxyDashboardServer:
         try:
             payload = await self.whatsapp.get_chat(jid, limit=80)
         except WhatsAppBridgeError as exc:
+            return {"chat": None, "messages": [], "error": str(exc)}
+        return payload
+
+    async def _build_imessage_auth(self) -> dict[str, object]:
+        if self.imessage is None:
+            return {
+                "ok": False,
+                "available": False,
+                "connected": False,
+                "has_session": False,
+                "chats": [],
+                "last_error": "iMessage bridge is unavailable",
+            }
+        try:
+            payload = await self.imessage.get_status(limit=500)
+        except IMessageBridgeError as exc:
+            return {
+                "ok": False,
+                "available": False,
+                "connected": False,
+                "has_session": False,
+                "chats": [],
+                "last_error": str(exc),
+            }
+        payload["available"] = True
+        return payload
+
+    async def _build_imessage_chat(self, chat_id: str) -> dict[str, object]:
+        if self.imessage is None:
+            return {"chat": None, "messages": [], "error": "iMessage bridge is unavailable"}
+        try:
+            payload = await self.imessage.get_chat(chat_id, limit=80)
+        except IMessageBridgeError as exc:
             return {"chat": None, "messages": [], "error": str(exc)}
         return payload
 
