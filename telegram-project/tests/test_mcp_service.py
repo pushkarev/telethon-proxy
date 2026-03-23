@@ -95,6 +95,75 @@ class _FakeUpstream:
         return {"id": 1, "name": "Proxy User", "phone": "79936003330", "username": "dimapush"}
 
 
+class _FakeWhatsApp:
+    def __init__(self) -> None:
+        self.chat = {
+            "jid": "12345@s.whatsapp.net",
+            "title": "Cloud WA Chat",
+            "kind": "dm",
+            "labels": ["Cloud"],
+            "last_message_at": _now().isoformat(),
+        }
+        self.messages = [
+            {
+                "id": "wamid-1",
+                "chat_id": self.chat["jid"],
+                "text": "hello wa",
+                "date": _now().isoformat(),
+                "from_me": False,
+                "kind": "conversation",
+            }
+        ]
+
+    async def get_status(self, *, limit=500):
+        return {
+            "ok": True,
+            "available": True,
+            "connected": False,
+            "has_session": False,
+            "cloud_label_name": "Cloud",
+            "cloud_label_found": True,
+            "qr_available": True,
+            "qr_raw": "qr-raw",
+            "qr_ascii": "qr-ascii",
+            "chats": [self.chat][:limit],
+        }
+
+    async def get_chats(self, *, limit=200):
+        return {"ok": True, "chats": [self.chat][:limit]}
+
+    async def get_chat(self, jid, *, limit=50):
+        return {"ok": True, "chat": self.chat, "messages": self.messages[:limit]}
+
+    async def send_message(self, *, jid: str, text: str):
+        message = {
+            "id": "wamid-2",
+            "chat_id": jid,
+            "text": text,
+            "date": _now().isoformat(),
+            "from_me": True,
+            "kind": "conversation",
+        }
+        self.messages.append(message)
+        return {"ok": True, "message": message}
+
+    async def mark_read(self, *, jid: str, message_id: str | None = None):
+        return {"ok": True, "marked": True, "message_id": message_id or self.messages[-1]["id"]}
+
+    async def get_updates(self, *, limit=50):
+        return {
+            "ok": True,
+            "updates": [
+                {
+                    "kind": "new_message",
+                    "chat_id": self.chat["jid"],
+                    "message_id": self.messages[-1]["id"],
+                    "message": self.messages[-1],
+                }
+            ][:limit],
+        }
+
+
 class McpServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -106,7 +175,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             mtproto_port=9001,
             downstream_api_id=900000,
         )
-        self.server = McpServer(self.config, _FakeUpstream())
+        self.server = McpServer(self.config, _FakeUpstream(), whatsapp=_FakeWhatsApp())
         await self.server.start()
 
     async def asyncTearDown(self) -> None:
@@ -146,6 +215,9 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("telegram.get_messages", tool_names)
         self.assertIn("telegram.delete_messages", tool_names)
         self.assertIn("telegram.mark_read", tool_names)
+        self.assertIn("whatsapp.list_chats", tool_names)
+        self.assertIn("whatsapp.get_auth_status", tool_names)
+        self.assertIn("whatsapp.get_messages", tool_names)
 
         status, payload, _ = await self._request(
             "POST",
@@ -164,6 +236,58 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["result"]["structuredContent"]["ok"])
         self.assertEqual(payload["result"]["structuredContent"]["messages"][0]["text"], "hello mcp")
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 31,
+                "method": "tools/call",
+                "params": {
+                    "name": "whatsapp.get_messages",
+                    "arguments": {"jid": "12345@s.whatsapp.net", "limit": 10},
+                },
+            },
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["result"]["structuredContent"]["ok"])
+        self.assertEqual(payload["result"]["structuredContent"]["messages"][0]["text"], "hello wa")
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 30,
+                "method": "tools/call",
+                "params": {
+                    "name": "whatsapp.get_auth_status",
+                    "arguments": {},
+                },
+            },
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["result"]["structuredContent"]["qr_available"])
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 32,
+                "method": "tools/call",
+                "params": {
+                    "name": "whatsapp.send_message",
+                    "arguments": {"jid": "12345@s.whatsapp.net", "text": "wa reply"},
+                },
+            },
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"]["structuredContent"]["message"]["text"], "wa reply")
 
         status, payload, _ = await self._request(
             "POST",
@@ -241,6 +365,8 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("telegram://config", uris)
         self.assertIn("telegram://chats", uris)
         self.assertIn("telegram://updates", uris)
+        self.assertIn("whatsapp://config", uris)
+        self.assertIn("whatsapp://chats", uris)
 
         status, payload, _ = await self._request(
             "POST",

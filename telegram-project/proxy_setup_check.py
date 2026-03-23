@@ -25,21 +25,26 @@ def main() -> None:
         missing.append('TG_API_ID')
     if not config.upstream_api_hash:
         missing.append('TG_API_HASH')
-    if not config.upstream_phone:
-        missing.append('TG_PHONE')
+    if not config.has_upstream_session_material():
+        missing.append('authorized upstream session')
 
     if missing:
-        print('Missing required upstream credentials:')
+        print('Telegram setup is incomplete:')
         for name in missing:
             print(f' - {name}')
+        print()
+        print('Next steps:')
+        print('  1. start the desktop app or python proxy_service.py')
+        print('  2. open Telegram -> Settings')
+        print('  3. save api_id/api_hash and complete the login flow')
+        print('  4. add the chats you want to expose to the Cloud folder')
         raise SystemExit(1)
 
-    print('Upstream credentials present.')
+    print('Upstream credentials and session present.')
     print('Next steps:')
-    print('  1. python app.py')
-    print('  2. python list_chat_folders.py')
-    print('  3. python proxy_service.py')
-    print('  4. python proxy_service.py --issue-session')
+    print('  1. python list_chat_folders.py')
+    print('  2. python proxy_service.py')
+    print('  3. python proxy_service.py --issue-session')
 
 
 if __name__ == '__main__':

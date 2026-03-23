@@ -8,13 +8,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from telethon import types, utils
 
 from .config import ProxyConfig
 from .update_bus import UpdateEnvelope
 from .upstream import UpstreamAdapter, UpstreamUnavailableError
+from .whatsapp_bridge import WhatsAppBridge, WhatsAppBridgeError
 
 SUPPORTED_PROTOCOL_VERSIONS = {
     "2024-11-05",
@@ -44,9 +45,10 @@ class McpSession:
 
 
 class McpServer:
-    def __init__(self, config: ProxyConfig, upstream: UpstreamAdapter) -> None:
+    def __init__(self, config: ProxyConfig, upstream: UpstreamAdapter, *, whatsapp: WhatsAppBridge | None = None) -> None:
         self.config = config
         self.upstream = upstream
+        self.whatsapp = whatsapp
         self._server: asyncio.AbstractServer | None = None
         self._sessions: dict[str, McpSession] = {}
         self._recent_updates: deque[dict[str, object]] = deque(maxlen=max(config.update_buffer_size, 200))
@@ -199,7 +201,7 @@ class McpServer:
                             "version": "0.2.0",
                         },
                         "instructions": (
-                            "Cloud-scoped Telegram access through the local proxy. "
+                            "Cloud-scoped Telegram access plus WhatsApp chats carrying the Cloud label. "
                             "Use resources/subscribe with an SSE GET stream to receive update notifications."
                         ),
                     },
@@ -228,6 +230,8 @@ class McpServer:
             return self._error(rpc_id, -32601, f"Method not found: {method}")
         except McpHttpError as exc:
             return self._error(rpc_id, -32000, exc.message)
+        except WhatsAppBridgeError as exc:
+            return self._error(rpc_id, -32000, f"WhatsApp unavailable: {exc}")
 
     async def _call_tool(self, params: dict[str, object]) -> dict[str, object]:
         name = str(params.get("name") or "")
@@ -266,12 +270,35 @@ class McpServer:
                 payload = await self._tool_list_members(peer=self._require_peer(arguments), limit=int(arguments.get("limit", 100)))
             elif name == "telegram.get_updates":
                 payload = await self._tool_get_updates(limit=int(arguments.get("limit", 50)))
+            elif name == "whatsapp.list_chats":
+                payload = await self._tool_whatsapp_list_chats(limit=int(arguments.get("limit", 100)))
+            elif name == "whatsapp.get_auth_status":
+                payload = await self._tool_whatsapp_get_auth_status()
+            elif name == "whatsapp.get_messages":
+                payload = await self._tool_whatsapp_get_messages(
+                    jid=self._require_whatsapp_jid(arguments),
+                    limit=int(arguments.get("limit", 50)),
+                )
+            elif name == "whatsapp.send_message":
+                payload = await self._tool_whatsapp_send_message(
+                    jid=self._require_whatsapp_jid(arguments),
+                    text=str(arguments.get("text") or ""),
+                )
+            elif name == "whatsapp.mark_read":
+                payload = await self._tool_whatsapp_mark_read(
+                    jid=self._require_whatsapp_jid(arguments),
+                    message_id=self._optional_str(arguments.get("message_id")),
+                )
+            elif name == "whatsapp.get_updates":
+                payload = await self._tool_whatsapp_get_updates(limit=int(arguments.get("limit", 50)))
             else:
                 raise McpHttpError(404, f"Unknown tool: {name}")
         except PermissionError as exc:
             payload = {"ok": False, "error": str(exc)}
         except UpstreamUnavailableError as exc:
             payload = {"ok": False, "error": f"Upstream unavailable: {exc}"}
+        except WhatsAppBridgeError as exc:
+            payload = {"ok": False, "error": f"WhatsApp unavailable: {exc}"}
 
         return {
             "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, indent=2)}],
@@ -311,6 +338,47 @@ class McpServer:
                     "description": f"Recent messages for {dialog.title}.",
                 }
             )
+        if self.whatsapp is not None:
+            resources.extend(
+                [
+                    {
+                        "uri": "whatsapp://config",
+                        "name": "WhatsApp configuration",
+                        "mimeType": "application/json",
+                        "description": "Status and Cloud-label scope for the local WhatsApp bridge.",
+                    },
+                    {
+                        "uri": "whatsapp://chats",
+                        "name": "WhatsApp chats",
+                        "mimeType": "application/json",
+                        "description": "WhatsApp chats currently carrying the Cloud label.",
+                    },
+                    {
+                        "uri": "whatsapp://updates",
+                        "name": "WhatsApp updates",
+                        "mimeType": "application/json",
+                        "description": "Recent WhatsApp message events across allowed chats.",
+                    },
+                ]
+            )
+            try:
+                status = await self.whatsapp.get_status(limit=500)
+            except WhatsAppBridgeError:
+                status = {"chats": []}
+            for chat in status.get("chats", []):
+                if not isinstance(chat, dict):
+                    continue
+                jid = str(chat.get("jid") or "")
+                if not jid:
+                    continue
+                resources.append(
+                    {
+                        "uri": f"whatsapp://chat/{quote(jid, safe='@.-_')}",
+                        "name": str(chat.get("title") or jid),
+                        "mimeType": "application/json",
+                        "description": f"Recent WhatsApp messages for {chat.get('title') or jid}.",
+                    }
+                )
         return resources
 
     async def _read_resource(self, params: dict[str, object]) -> dict[str, object]:
@@ -323,6 +391,14 @@ class McpServer:
             payload = await self._tool_get_updates(limit=100)
         elif uri.startswith("telegram://chat/"):
             payload = await self._tool_get_messages(peer=uri.removeprefix("telegram://chat/"), limit=50)
+        elif uri == "whatsapp://config":
+            payload = await self._resource_whatsapp_config()
+        elif uri == "whatsapp://chats":
+            payload = await self._tool_whatsapp_list_chats(limit=500)
+        elif uri == "whatsapp://updates":
+            payload = await self._tool_whatsapp_get_updates(limit=100)
+        elif uri.startswith("whatsapp://chat/"):
+            payload = await self._tool_whatsapp_get_messages(jid=unquote(uri.removeprefix("whatsapp://chat/")), limit=50)
         else:
             raise McpHttpError(404, f"Unknown resource: {uri}")
 
@@ -394,8 +470,52 @@ class McpServer:
         updates = list(self._recent_updates)[-limit:]
         return {"ok": True, "updates": updates}
 
+    async def _tool_whatsapp_list_chats(self, *, limit: int) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        payload = await self.whatsapp.get_chats(limit=limit)
+        return {"ok": True, "chats": payload.get("chats", [])}
+
+    async def _tool_whatsapp_get_auth_status(self) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        return await self.whatsapp.get_status(limit=50)
+
+    async def _tool_whatsapp_get_messages(self, *, jid: str, limit: int) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        payload = await self.whatsapp.get_chat(jid, limit=limit)
+        return {
+            "ok": True,
+            "chat": payload.get("chat"),
+            "messages": payload.get("messages", []),
+        }
+
+    async def _tool_whatsapp_send_message(self, *, jid: str, text: str) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        payload = await self.whatsapp.send_message(jid=jid, text=text)
+        return {"ok": True, "message": payload.get("message")}
+
+    async def _tool_whatsapp_mark_read(self, *, jid: str, message_id: str | None) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        return await self.whatsapp.mark_read(jid=jid, message_id=message_id)
+
+    async def _tool_whatsapp_get_updates(self, *, limit: int) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        payload = await self.whatsapp.get_updates(limit=limit)
+        return {"ok": True, "updates": payload.get("updates", [])}
+
     async def _resource_config(self) -> dict[str, object]:
         identity = await self.upstream.get_identity()
+        whatsapp = None
+        if self.whatsapp is not None:
+            try:
+                whatsapp = await self.whatsapp.get_status(limit=50)
+            except WhatsAppBridgeError as exc:
+                whatsapp = {"ok": False, "last_error": str(exc)}
         return {
             "ok": True,
             "upstream": identity,
@@ -411,6 +531,21 @@ class McpServer:
                 "host": self.config.downstream_host,
                 "port": self.config.mtproto_port,
                 "api_id": self.config.downstream_api_id,
+            },
+            "whatsapp": whatsapp,
+        }
+
+    async def _resource_whatsapp_config(self) -> dict[str, object]:
+        if self.whatsapp is None:
+            raise McpHttpError(404, "WhatsApp bridge is unavailable")
+        payload = await self.whatsapp.get_status(limit=200)
+        return {
+            "ok": True,
+            "bridge": payload,
+            "mcp": {
+                "host": self.config.mcp_host,
+                "port": self.config.mcp_port,
+                "path": self.config.mcp_path,
             },
         }
 
@@ -498,6 +633,57 @@ class McpServer:
             {
                 "name": "telegram.get_updates",
                 "description": "Fetch recent update events. For push, subscribe to telegram://updates or telegram://chat/<peer_id> over SSE.",
+                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
+            },
+            {
+                "name": "whatsapp.list_chats",
+                "description": "List WhatsApp chats currently carrying the Cloud label.",
+                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}},
+            },
+            {
+                "name": "whatsapp.get_auth_status",
+                "description": "Get WhatsApp bridge connection state, including any pending QR login payload.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "whatsapp.get_messages",
+                "description": "Get recent messages from one allowed WhatsApp chat.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["jid"],
+                    "properties": {
+                        "jid": {"type": "string", "description": "WhatsApp chat JID, for example 12345@s.whatsapp.net or 123-456@g.us."},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                    },
+                },
+            },
+            {
+                "name": "whatsapp.send_message",
+                "description": "Send a text message into one allowed WhatsApp chat.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["jid", "text"],
+                    "properties": {
+                        "jid": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "whatsapp.mark_read",
+                "description": "Mark an allowed WhatsApp chat as read, optionally targeting a specific message id.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["jid"],
+                    "properties": {
+                        "jid": {"type": "string"},
+                        "message_id": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "whatsapp.get_updates",
+                "description": "Fetch recent WhatsApp message events from chats carrying the Cloud label.",
                 "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
             },
         ]
@@ -624,15 +810,30 @@ class McpServer:
             raise McpHttpError(400, "Missing required tool argument: message_ids")
         return [int(item) for item in value]
 
+    def _require_whatsapp_jid(self, arguments: dict[str, object]) -> str:
+        jid = str(arguments.get("jid") or "").strip()
+        if not jid:
+            raise McpHttpError(400, "Missing required tool argument: jid")
+        return jid
+
     def _optional_int(self, value: object) -> int | None:
         if value in (None, "", False):
             return None
         return int(value)
 
+    def _optional_str(self, value: object) -> str | None:
+        if value in (None, "", False):
+            return None
+        return str(value)
+
     def _validate_resource_uri(self, uri: str) -> None:
         if uri == "telegram://config" or uri == "telegram://chats" or uri == "telegram://updates":
             return
         if uri.startswith("telegram://chat/"):
+            return
+        if uri == "whatsapp://config" or uri == "whatsapp://chats" or uri == "whatsapp://updates":
+            return
+        if uri.startswith("whatsapp://chat/"):
             return
         raise McpHttpError(404, f"Unknown resource: {uri}")
 

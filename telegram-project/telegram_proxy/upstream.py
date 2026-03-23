@@ -5,9 +5,11 @@ import contextlib
 import io
 import logging
 from collections import deque
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from telethon import TelegramClient, events, functions, types, utils
+from telethon.sessions import StringSession
 
 from .config import ProxyConfig
 from .filtering import FilterResult, ensure_allowed_peer, filter_messages_bundle
@@ -25,12 +27,17 @@ class UpstreamUnavailableError(RuntimeError):
 
 
 class UpstreamAdapter:
-    def __init__(self, config: ProxyConfig, *, client: TelegramClient | None = None) -> None:
+    def __init__(
+        self,
+        config: ProxyConfig,
+        *,
+        client: TelegramClient | None = None,
+        client_factory: Callable[[object, int, str], TelegramClient] | None = None,
+    ) -> None:
         self.config = config
-        self.client = client or TelegramClient(
-            str(config.upstream_session_path),
-            config.upstream_api_id,
-            config.upstream_api_hash,
+        self._client_factory = client_factory or (lambda session, api_id, api_hash: TelegramClient(session, api_id, api_hash))
+        self.client: TelegramClient | None = client or (
+            self._build_client() if self.has_runtime_credentials() and self.has_persisted_session_material() else None
         )
         self.policy = CloudPolicySnapshot(folder_name=config.cloud_folder_name)
         self.update_bus = UpdateBus(buffer_size=config.update_buffer_size)
@@ -45,12 +52,30 @@ class UpstreamAdapter:
         self._handlers_registered = False
         self._stopping = False
 
+    def has_runtime_credentials(self) -> bool:
+        return bool(self.config.upstream_api_id and self.config.upstream_api_hash)
+
+    def has_persisted_session_material(self) -> bool:
+        if getattr(self, "client", None) is not None:
+            return True
+        return self.config.has_upstream_session_material()
+
+    def _build_client(self) -> TelegramClient:
+        session = StringSession(self.config.upstream_session_string) if self.config.upstream_session_string else str(
+            self.config.upstream_session_path
+        )
+        return self._client_factory(session, self.config.upstream_api_id, self.config.upstream_api_hash)
+
     async def start(self) -> None:
-        if not self.config.upstream_api_id or not self.config.upstream_api_hash:
-            raise RuntimeError("Missing upstream Telegram credentials")
         self._stopping = False
+        if not self.has_runtime_credentials():
+            logger.info("Upstream Telegram credentials are not configured yet; waiting for dashboard authentication")
+            return
+        if not self.has_persisted_session_material():
+            logger.info("Upstream Telegram session is not configured yet; waiting for dashboard authentication")
+            return
         self._register_event_handlers()
-        self._supervisor_task = asyncio.create_task(self._supervise_connection())
+        self._ensure_supervisor_task()
         try:
             await self.ensure_connected(force_refresh_policy=True)
         except UpstreamUnavailableError as exc:
@@ -76,8 +101,9 @@ class UpstreamAdapter:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._supervisor_task
             self._supervisor_task = None
-        with contextlib.suppress(Exception):
-            await self.client.disconnect()
+        if self.client is not None:
+            with contextlib.suppress(Exception):
+                await self.client.disconnect()
 
     async def refresh_policy(self) -> CloudPolicySnapshot:
         await self.ensure_connected()
@@ -88,6 +114,12 @@ class UpstreamAdapter:
         async with self._connect_lock:
             if self._stopping:
                 raise UpstreamUnavailableError("Upstream adapter is stopping")
+            if not self.has_runtime_credentials():
+                raise RuntimeError("Telegram authentication is required in Telegram -> Settings")
+            if self.client is None and not self.has_persisted_session_material():
+                raise RuntimeError("Telegram authentication is required in Telegram -> Settings")
+            if self.client is None:
+                self.client = self._build_client()
             refresh_needed = force_refresh_policy or not self.policy.allowed_peers
             if self.client.is_connected():
                 if refresh_needed:
@@ -97,9 +129,7 @@ class UpstreamAdapter:
             try:
                 await self.client.connect()
                 if not await self.client.is_user_authorized():
-                    if not self.config.upstream_phone:
-                        raise RuntimeError("Missing upstream phone number for unauthorized Telegram session")
-                    await self.client.start(phone=self.config.upstream_phone)
+                    raise RuntimeError("Telegram authentication is required in Telegram -> Settings")
                 if refresh_needed:
                     async with self._policy_lock:
                         await self._refresh_policy_locked()
@@ -428,6 +458,8 @@ class UpstreamAdapter:
 
     async def get_identity(self) -> dict[str, object]:
         await self.ensure_connected()
+        if self.client is None:
+            raise RuntimeError("Telegram authentication is required in Telegram -> Settings")
         me = await self.client.get_me()
         full_name = " ".join(part for part in [getattr(me, "first_name", None), getattr(me, "last_name", None)] if part).strip()
         return {
@@ -436,6 +468,73 @@ class UpstreamAdapter:
             "phone": getattr(me, "phone", None),
             "username": getattr(me, "username", None),
         }
+
+    async def apply_authorized_session(
+        self,
+        *,
+        api_id: int,
+        api_hash: str,
+        phone: str,
+        session_string: str,
+    ) -> None:
+        async with self._connect_lock:
+            old_client = self.client
+            self.config.upstream_api_id = api_id
+            self.config.upstream_api_hash = api_hash
+            self.config.upstream_phone = phone
+            self.config.upstream_session_string = session_string
+            self.client = self._build_client()
+            self.policy = CloudPolicySnapshot(folder_name=self.config.cloud_folder_name)
+            self._recent_update_keys.clear()
+            self._recent_update_index.clear()
+            self._handlers_registered = False
+            self._register_event_handlers()
+            if old_client is not None:
+                with contextlib.suppress(Exception):
+                    await old_client.disconnect()
+        self._ensure_supervisor_task()
+        await self.ensure_connected(force_refresh_policy=True)
+
+    async def reset_authorization(self) -> None:
+        supervisor = self._supervisor_task
+        self._supervisor_task = None
+        if supervisor is not None:
+            supervisor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await supervisor
+        async with self._connect_lock:
+            old_client = self.client
+            self.config.upstream_api_id = 0
+            self.config.upstream_api_hash = ""
+            self.config.upstream_phone = ""
+            self.config.upstream_session_string = ""
+            self.client = None
+            self.policy = CloudPolicySnapshot(folder_name=self.config.cloud_folder_name)
+            self._recent_update_keys.clear()
+            self._recent_update_index.clear()
+            self._handlers_registered = False
+            if old_client is not None:
+                with contextlib.suppress(Exception):
+                    await old_client.disconnect()
+
+    async def reset_session(self) -> None:
+        supervisor = self._supervisor_task
+        self._supervisor_task = None
+        if supervisor is not None:
+            supervisor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await supervisor
+        async with self._connect_lock:
+            old_client = self.client
+            self.config.upstream_session_string = ""
+            self.client = None
+            self.policy = CloudPolicySnapshot(folder_name=self.config.cloud_folder_name)
+            self._recent_update_keys.clear()
+            self._recent_update_index.clear()
+            self._handlers_registered = False
+            if old_client is not None:
+                with contextlib.suppress(Exception):
+                    await old_client.disconnect()
 
     async def _on_new_message(self, event) -> None:
         await self._publish_if_allowed(event.message, kind="new_message")
@@ -483,6 +582,8 @@ class UpstreamAdapter:
 
     def _register_event_handlers(self) -> None:
         if self._handlers_registered:
+            return
+        if self.client is None:
             return
         self.client.add_event_handler(self._on_new_message, events.NewMessage)
         self.client.add_event_handler(self._on_message_edited, events.MessageEdited)
@@ -562,3 +663,7 @@ class UpstreamAdapter:
                 return
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
+
+    def _ensure_supervisor_task(self) -> None:
+        if self._supervisor_task is None or self._supervisor_task.done():
+            self._supervisor_task = asyncio.create_task(self._supervise_connection())

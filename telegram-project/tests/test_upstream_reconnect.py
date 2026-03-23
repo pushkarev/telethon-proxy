@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from telethon import types, utils
@@ -135,6 +136,39 @@ class UpstreamReconnectTests(unittest.IsolatedAsyncioTestCase):
         dialogs = await self.adapter.get_dialogs(limit=2)
 
         self.assertEqual([dialog.entity.id for dialog in dialogs], [100, 200])
+
+    async def test_start_without_credentials_waits_for_dashboard_auth(self) -> None:
+        config = ProxyConfig(
+            upstream_api_id=0,
+            upstream_api_hash="",
+            upstream_reconnect_min_delay=0.01,
+            upstream_reconnect_max_delay=0.05,
+        )
+        adapter = UpstreamAdapter(config, client=self.client)
+        try:
+            await adapter.start()
+            self.assertFalse(self.client.connected)
+            self.assertIsNone(adapter._supervisor_task)
+            with self.assertRaises(RuntimeError):
+                await adapter.ensure_connected()
+        finally:
+            await adapter.stop()
+
+    async def test_start_with_credentials_but_without_session_waits_for_dashboard_auth(self) -> None:
+        config = ProxyConfig(
+            upstream_api_id=1,
+            upstream_api_hash="hash",
+            upstream_session_name=str((Path(self.id()).with_suffix(".session"))),
+            upstream_reconnect_min_delay=0.01,
+            upstream_reconnect_max_delay=0.05,
+        )
+        adapter = UpstreamAdapter(config, client_factory=lambda _session, _api_id, _api_hash: self.client)
+        try:
+            await adapter.start()
+            self.assertFalse(self.client.connected)
+            self.assertIsNone(adapter._supervisor_task)
+        finally:
+            await adapter.stop()
 
     async def _wait_for(self, predicate, timeout: float = 0.5) -> None:
         deadline = asyncio.get_running_loop().time() + timeout

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from telethon import utils
@@ -12,7 +10,9 @@ from telethon import utils
 from .config import ProxyConfig
 from .downstream_registry import DownstreamRegistry
 from .mtproto_service import MTProtoProxyServer
+from .secrets_store import MacOSSecretStore
 from .upstream import UpstreamAdapter, UpstreamUnavailableError
+from .whatsapp_bridge import WhatsAppBridge, WhatsAppBridgeError
 
 
 SUPPORTED_APIS = {
@@ -43,15 +43,6 @@ SUPPORTED_APIS = {
     ],
 }
 
-
-WEBUI_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "webui"
-STATIC_CONTENT_TYPES = {
-    ".css": "text/css; charset=utf-8",
-    ".js": "application/javascript; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-}
-
-
 class ProxyDashboardServer:
     def __init__(
         self,
@@ -59,11 +50,17 @@ class ProxyDashboardServer:
         upstream: UpstreamAdapter,
         registry: DownstreamRegistry,
         mtproto: MTProtoProxyServer,
+        telegram_auth=None,
+        whatsapp: WhatsAppBridge | None = None,
+        secret_store: MacOSSecretStore | None = None,
     ) -> None:
         self.config = config
         self.upstream = upstream
         self.registry = registry
         self.mtproto = mtproto
+        self.telegram_auth = telegram_auth
+        self.whatsapp = whatsapp
+        self.secret_store = secret_store or MacOSSecretStore()
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -87,31 +84,58 @@ class ProxyDashboardServer:
             if not request_line:
                 return
             method, target, _version = request_line.decode("ascii", errors="replace").strip().split(" ", 2)
+            headers: dict[str, str] = {}
             while True:
                 line = await reader.readline()
                 if not line or line in {b"\r\n", b"\n"}:
                     break
+                text = line.decode("ascii", errors="replace").strip()
+                if ":" not in text:
+                    continue
+                name, value = text.split(":", 1)
+                headers[name.strip().lower()] = value.strip()
 
-            if method != "GET":
-                await self._write_response(writer, 405, b"Method Not Allowed", "text/plain; charset=utf-8")
-                return
+            body = b""
+            content_length = int(headers.get("content-length", "0") or "0")
+            if content_length:
+                body = await reader.readexactly(content_length)
 
             url = urlsplit(target)
-            if url.path == "/" or url.path == "/index.html":
-                await self._serve_static(writer, "index.html")
-                return
-            if url.path in {"/styles.css", "/app.js"}:
-                await self._serve_static(writer, url.path.lstrip("/"))
-                return
-            if url.path == "/api/overview":
+            if method == "GET" and url.path == "/api/overview":
                 payload = await self._build_overview()
                 await self._write_json(writer, 200, payload)
                 return
-            if url.path == "/api/chat":
+            if method == "GET" and url.path == "/api/chat":
                 params = parse_qs(url.query)
                 peer_id = int(params.get("peer_id", ["0"])[0])
                 payload = await self._build_chat(peer_id)
                 await self._write_json(writer, 200, payload)
+                return
+            if method == "GET" and url.path == "/api/telegram/auth":
+                await self._write_json(writer, 200, await self._build_telegram_auth())
+                return
+            if method == "GET" and url.path == "/api/whatsapp/auth":
+                await self._write_json(writer, 200, await self._build_whatsapp_auth())
+                return
+            if method == "GET" and url.path == "/api/whatsapp/chat":
+                params = parse_qs(url.query)
+                jid = params.get("jid", [""])[0]
+                await self._write_json(writer, 200, await self._build_whatsapp_chat(jid))
+                return
+            if method == "GET" and url.path == "/api/mcp/token":
+                await self._write_json(writer, 200, await self._build_mcp_token())
+                return
+            if method == "POST" and url.path.startswith("/api/telegram/auth/"):
+                await self._handle_telegram_auth_post(writer, url.path, body)
+                return
+            if method == "POST" and url.path.startswith("/api/whatsapp/auth/"):
+                await self._handle_whatsapp_auth_post(writer, url.path, body)
+                return
+            if method == "POST" and url.path == "/api/mcp/token/rotate":
+                await self._handle_mcp_token_rotate(writer)
+                return
+            if method != "GET" and method != "POST":
+                await self._write_response(writer, 405, b"Method Not Allowed", "text/plain; charset=utf-8")
                 return
 
             await self._write_response(writer, 404, b"Not Found", "text/plain; charset=utf-8")
@@ -119,29 +143,23 @@ class ProxyDashboardServer:
             writer.close()
             await writer.wait_closed()
 
-    async def _serve_static(self, writer: asyncio.StreamWriter, asset_name: str) -> None:
-        path = (WEBUI_DIR / asset_name).resolve()
-        if path.parent != WEBUI_DIR or not path.exists() or not path.is_file():
-            await self._write_response(writer, 404, b"Not Found", "text/plain; charset=utf-8")
-            return
-        content_type = STATIC_CONTENT_TYPES.get(path.suffix, "application/octet-stream")
-        await self._write_response(writer, 200, path.read_bytes(), content_type)
-
     async def _build_overview(self) -> dict[str, object]:
         chats = []
         error = None
         try:
             dialogs = await self.upstream.get_dialogs(limit=500)
             chats = [self._serialize_dialog(dialog) for dialog in dialogs]
-        except UpstreamUnavailableError:
-            error = "Upstream Telegram connection is currently unavailable."
+        except (UpstreamUnavailableError, RuntimeError):
+            error = "Upstream Telegram connection is not available yet. Use Telegram -> Settings to authorize."
 
         issued_clients = self.registry.list_clients()
+        whatsapp = await self._build_whatsapp_auth()
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "error": error,
             "config": {
                 "cloud_folder_name": self.config.cloud_folder_name,
+                "whatsapp_cloud_label_name": self.config.whatsapp_cloud_label_name,
                 "mtproto_port": self.config.mtproto_port,
                 "downstream_host": self.config.downstream_host,
                 "downstream_api_id": self.config.downstream_api_id,
@@ -166,14 +184,20 @@ class ProxyDashboardServer:
                 "transport": "HTTP JSON-RPC",
                 "auth": "Authorization: Bearer <token>",
                 "allowed_origin": "localhost / 127.0.0.1",
-                "token": self.config.mcp_token,
+                "token_hidden": True,
+                "token_env_managed": self.config.mcp_token_env_managed,
             },
+            "telegram_auth": await self._build_telegram_auth(),
+            "whatsapp": whatsapp,
             "chats": chats,
             "apis": SUPPORTED_APIS,
         }
 
     async def _build_chat(self, peer_id: int) -> dict[str, object]:
-        dialogs = await self.upstream.get_dialogs(limit=500)
+        try:
+            dialogs = await self.upstream.get_dialogs(limit=500)
+        except (UpstreamUnavailableError, RuntimeError):
+            return {"chat": None, "messages": []}
         selected = next((dialog for dialog in dialogs if utils.get_peer_id(dialog.entity) == peer_id), None)
         if selected is None:
             return {"chat": None, "messages": []}
@@ -182,6 +206,41 @@ class ProxyDashboardServer:
             "chat": self._serialize_dialog(selected),
             "messages": [self._serialize_message(message) for message in history.messages],
         }
+
+    async def _build_whatsapp_auth(self) -> dict[str, object]:
+        if self.whatsapp is None:
+            return {
+                "ok": False,
+                "available": False,
+                "connected": False,
+                "has_session": False,
+                "cloud_label_name": self.config.whatsapp_cloud_label_name,
+                "chats": [],
+                "last_error": "WhatsApp bridge is unavailable",
+            }
+        try:
+            payload = await self.whatsapp.get_status(limit=500)
+        except WhatsAppBridgeError as exc:
+            return {
+                "ok": False,
+                "available": False,
+                "connected": False,
+                "has_session": False,
+                "cloud_label_name": self.config.whatsapp_cloud_label_name,
+                "chats": [],
+                "last_error": str(exc),
+            }
+        payload["available"] = True
+        return payload
+
+    async def _build_whatsapp_chat(self, jid: str) -> dict[str, object]:
+        if self.whatsapp is None:
+            return {"chat": None, "messages": [], "error": "WhatsApp bridge is unavailable"}
+        try:
+            payload = await self.whatsapp.get_chat(jid, limit=80)
+        except WhatsAppBridgeError as exc:
+            return {"chat": None, "messages": [], "error": str(exc)}
+        return payload
 
     async def _write_json(self, writer: asyncio.StreamWriter, status: int, payload: dict[str, object]) -> None:
         await self._write_response(
@@ -199,9 +258,11 @@ class ProxyDashboardServer:
         content_type: str,
     ) -> None:
         reason = {
+            400: "Bad Request",
             200: "OK",
             404: "Not Found",
             405: "Method Not Allowed",
+            500: "Internal Server Error",
         }.get(status, "OK")
         headers = [
             f"HTTP/1.1 {status} {reason}",
@@ -214,6 +275,119 @@ class ProxyDashboardServer:
         ]
         writer.write("\r\n".join(headers).encode("ascii") + body)
         await writer.drain()
+
+    async def _build_telegram_auth(self) -> dict[str, object]:
+        if self.telegram_auth is None:
+            return {
+                "keychain_backend": "Unavailable",
+                "has_api_credentials": False,
+                "has_session": False,
+                "phone": self.config.upstream_phone,
+                "saved_phone": self.config.upstream_phone or None,
+                "next_step": "credentials",
+                "pending_phone": None,
+                "last_error": None,
+            }
+        return await self.telegram_auth.get_status()
+
+    async def _handle_telegram_auth_post(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        body: bytes,
+    ) -> None:
+        if self.telegram_auth is None:
+            await self._write_json(writer, 500, {"error": "Telegram auth service is unavailable"})
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        try:
+            if path == "/api/telegram/auth/save":
+                result = await self.telegram_auth.save_credentials(
+                    api_id=str(payload.get("api_id", "")),
+                    api_hash=str(payload.get("api_hash", "")),
+                    phone=str(payload.get("phone", "")),
+                )
+            elif path == "/api/telegram/auth/request-code":
+                result = await self.telegram_auth.request_code(phone=str(payload.get("phone", "")))
+            elif path == "/api/telegram/auth/submit-code":
+                result = await self.telegram_auth.submit_code(code=str(payload.get("code", "")))
+            elif path == "/api/telegram/auth/submit-password":
+                result = await self.telegram_auth.submit_password(password=str(payload.get("password", "")))
+            elif path == "/api/telegram/auth/clear-session":
+                result = await self.telegram_auth.clear_saved_session()
+            elif path == "/api/telegram/auth/clear":
+                result = await self.telegram_auth.clear_saved_auth()
+            else:
+                await self._write_response(writer, 404, b"Not Found", "text/plain; charset=utf-8")
+                return
+        except ValueError as exc:
+            await self._write_json(writer, 400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            await self._write_json(writer, 500, {"error": str(exc) or exc.__class__.__name__})
+            return
+
+        await self._write_json(writer, 200, result)
+
+    async def _handle_whatsapp_auth_post(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        body: bytes,
+    ) -> None:
+        if self.whatsapp is None:
+            await self._write_json(writer, 500, {"error": "WhatsApp bridge is unavailable"})
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        try:
+            if path == "/api/whatsapp/auth/request-pairing-code":
+                result = await self.whatsapp.request_pairing_code(phone=str(payload.get("phone", "")))
+            elif path == "/api/whatsapp/auth/logout":
+                result = await self.whatsapp.logout()
+            else:
+                await self._write_response(writer, 404, b"Not Found", "text/plain; charset=utf-8")
+                return
+        except WhatsAppBridgeError as exc:
+            await self._write_json(writer, 500, {"error": str(exc)})
+            return
+
+        await self._write_json(writer, 200, result)
+
+    async def _build_mcp_token(self) -> dict[str, object]:
+        return {
+            "token": self.config.mcp_token,
+            "env_managed": self.config.mcp_token_env_managed,
+        }
+
+    async def _handle_mcp_token_rotate(self, writer: asyncio.StreamWriter) -> None:
+        if self.config.mcp_token_env_managed:
+            await self._write_json(
+                writer,
+                400,
+                {"error": "MCP token is managed by TP_MCP_TOKEN and cannot be rotated from the UI"},
+            )
+            return
+        token = self.secret_store.rotate_mcp_token()
+        self.config.mcp_token = token
+        await self._write_json(
+            writer,
+            200,
+            {
+                "token": token,
+                "env_managed": False,
+                "message": "MCP bearer token rotated.",
+            },
+        )
 
     def _serialize_dialog(self, dialog) -> dict[str, object]:
         entity = dialog.entity

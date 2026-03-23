@@ -3,12 +3,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import json
+import logging
 import os
 import sys
 
 from config_paths import load_project_env
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telegram_proxy.hooks import IncomingHook
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--code", default=os.getenv("TP_PROXY_CODE", ""))
     parser.add_argument("--password", default=os.getenv("TP_PROXY_PASSWORD", ""))
     parser.add_argument("--limit", type=int, default=int(os.getenv("TP_DIALOG_LIMIT", "100")))
+    parser.add_argument("--hook-command", default=os.getenv("TP_INCOMING_HOOK", ""))
+    parser.add_argument("--list-only", action="store_true", help="List chats and exit without watching for messages.")
     return parser.parse_args()
 
 
@@ -56,14 +64,98 @@ def build_session(session_string: str, host: str, port: int) -> StringSession:
     return session
 
 
+def display_name(entity: object | None) -> str:
+    if entity is None:
+        return ""
+    for attribute in ("title", "username", "first_name"):
+        value = getattr(entity, attribute, None)
+        if value:
+            return str(value)
+    if getattr(entity, "last_name", None):
+        return str(entity.last_name)
+    return ""
+
+
+def echo_text_for_event(event: events.NewMessage.Event) -> str:
+    text = (event.raw_text or "").strip()
+    if text:
+        return text
+    if getattr(event, "sticker", False):
+        return "[sticker]"
+    if getattr(event, "photo", False):
+        return "[photo]"
+    if getattr(event, "gif", False):
+        return "[gif]"
+    if getattr(event, "voice", False):
+        return "[voice]"
+    if getattr(event, "video", False):
+        return "[video]"
+    file_name = getattr(getattr(event, "file", None), "name", "") or ""
+    if file_name:
+        return f"[file] {file_name}"
+    if event.message.media is not None:
+        return "[media]"
+    return "[unsupported message]"
+
+
+def hook_payload_for_event(event: events.NewMessage.Event, *, echoed_text: str) -> dict[str, object]:
+    sender = getattr(event, "sender", None)
+    chat = getattr(event, "chat", None)
+    return {
+        "chat_id": event.chat_id,
+        "message_id": event.id,
+        "sender_id": event.sender_id,
+        "text": event.raw_text,
+        "echo_text": echoed_text,
+        "date": event.message.date.isoformat() if event.message.date else None,
+        "is_private": event.is_private,
+        "is_group": event.is_group,
+        "is_channel": event.is_channel,
+        "has_media": event.message.media is not None,
+        "chat_name": display_name(chat),
+        "sender_name": display_name(sender),
+    }
+
+
+async def list_dialogs(client: TelegramClient, *, limit: int) -> None:
+    async for dialog in client.iter_dialogs(limit=limit):
+        entity = dialog.entity
+        username = getattr(entity, "username", "") or "-"
+        print(f"{dialog.id}\t{dialog.name}\t{username}")
+
+
+async def watch_and_echo(client: TelegramClient, *, hook: IncomingHook) -> None:
+    @client.on(events.NewMessage(incoming=True))
+    async def on_message(event: events.NewMessage.Event) -> None:
+        echoed_text = echo_text_for_event(event)
+        payload = hook_payload_for_event(event, echoed_text=echoed_text)
+        delivery = await hook.deliver(payload)
+        logger.info(
+            "incoming chat_id=%s message_id=%s hook_delivered=%s hook_rc=%s payload=%s",
+            event.chat_id,
+            event.id,
+            delivery.delivered,
+            delivery.returncode,
+            json.dumps(payload, ensure_ascii=False),
+        )
+        await client.send_read_acknowledge(event.chat_id, max_id=event.id)
+        await client.send_message(event.chat_id, echoed_text)
+
+    print("")
+    print("Watching for incoming messages. Press Ctrl+C to stop.")
+    await client.run_until_disconnected()
+
+
 async def amain() -> None:
     load_project_env()
     args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     session_string = require_value("TP_PROXY_SESSION", args.session, "Proxy session string: ", secret=True)
     phone = require_value("TP_PROXY_PHONE", args.phone, "Proxy phone number: ")
     password = args.password.strip()
     code = args.code.strip()
+    hook = IncomingHook(args.hook_command)
 
     client = TelegramClient(
         build_session(session_string, args.host, args.port),
@@ -86,17 +178,19 @@ async def amain() -> None:
         print(f"Authorized as: {getattr(me, 'first_name', '')} {getattr(me, 'last_name', '')}".strip())
         print(f"Phone: +{me.phone}" if getattr(me, "phone", None) else "Phone: <unknown>")
         print("")
-
-        async for dialog in client.iter_dialogs(limit=args.limit):
-            entity = dialog.entity
-            username = getattr(entity, "username", "") or "-"
-            print(f"{dialog.id}\t{dialog.name}\t{username}")
+        await list_dialogs(client, limit=args.limit)
+        if not args.list_only:
+            await watch_and_echo(client, hook=hook)
     finally:
         await client.disconnect()
 
 
 def main() -> None:
-    asyncio.run(amain())
+    try:
+        asyncio.run(amain())
+    except KeyboardInterrupt:
+        print("")
+        print("Stopped.")
 
 
 if __name__ == "__main__":

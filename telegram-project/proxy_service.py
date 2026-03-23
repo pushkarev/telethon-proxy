@@ -10,7 +10,6 @@ from getpass import getuser
 from pathlib import Path
 
 from config_paths import load_project_env
-from telegram_auth import resolve_runtime_credentials
 from telegram_proxy.config import ProxyConfig
 from telegram_proxy.downstream_registry import DownstreamRegistry
 from telegram_proxy.service import ProxyService
@@ -168,13 +167,6 @@ async def amain() -> int:
         return uninstall_launchd(label=args.launchd_label)
     if args.launchd_status:
         return print_launchd_status(label=args.launchd_label)
-
-    if not config.upstream_api_id or not config.upstream_api_hash:
-        credentials = resolve_runtime_credentials(require_phone=False)
-        config.upstream_api_id = credentials.api_id
-        config.upstream_api_hash = credentials.api_hash
-        if credentials.phone and not config.upstream_phone:
-            config.upstream_phone = credentials.phone
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     service = ProxyService(config)

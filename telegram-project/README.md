@@ -18,11 +18,7 @@ Small Python project using [Telethon](https://github.com/LonamiWebs/Telethon) to
    mkdir -p ~/.tlt-proxy
    cp .env.example ~/.tlt-proxy/.env
    ```
-4. Fill in your Telegram API credentials in `~/.tlt-proxy/.env`.
-5. Run the auth check:
-   ```bash
-   python app.py
-   ```
+4. Start the app or local service and authorize through `Telegram -> Settings`.
 5. List chats and their folders:
    ```bash
    python list_chat_folders.py
@@ -76,12 +72,14 @@ Create an app at: https://my.telegram.org/apps
 You will need:
 - `TG_API_ID`
 - `TG_API_HASH`
-- a phone number for the Telegram account you want to authorize
+- the phone number for the Telegram account you want to authorize in the UI flow
 
 ## Notes
 
 - By default, config lives in `~/.tlt-proxy/.env`.
-- By default, session data is stored under `~/.tlt-proxy/sessions/`.
+- The supported upstream login flow is now the desktop UI under `Telegram -> Settings`.
+- On macOS, that flow stores upstream API credentials and the authorized session in Keychain.
+- By default, session data is stored under `~/.tlt-proxy/sessions/` when Keychain is not being used.
 - Never commit your real env file or session files.
 
 ## Telegram-compatible proxy scaffold
@@ -152,37 +150,25 @@ Supported harness methods today:
 2. Fill in `~/.tlt-proxy/.env`:
    - `TG_API_ID`
    - `TG_API_HASH`
-   - `TG_PHONE`
-   Or, if you prefer not to keep Telegram app credentials in a file, leave them unset and enter them interactively when running `app.py --qr`.
+   You can also leave them unset and use the desktop Telegram Settings flow instead, which saves credentials and the upstream session into macOS Keychain.
 3. Check config:
    ```bash
    source .venv/bin/activate
    python proxy_setup_check.py
    ```
-4. Authorize the upstream account:
-   ```bash
-   python app.py
-   ```
-   Or run it with inline env vars for a one-off interactive login:
-   ```bash
-   TG_API_ID=12345 \
-   TG_API_HASH=your_api_hash \
-   TG_PHONE=+15550000000 \
-   TG_SESSION_NAME=~/.tlt-proxy/sessions/proxy_upstream \
-   python app.py
-   ```
-   The script will prompt in the terminal for the Telegram login code and, if needed, the 2FA password.
-   For QR login without storing Telegram app credentials in `~/.tlt-proxy/.env`:
-   ```bash
-   TG_SESSION_NAME=~/.tlt-proxy/sessions/proxy_upstream \
-   python app.py --qr --qr-png
-   ```
-   That flow prompts for `TG_API_ID` and `TG_API_HASH` interactively, saves a QR PNG, and does not require `TG_PHONE`.
-   If the QR expires before you approve it, the tool now regenerates a fresh QR instead of exiting.
+4. Authorize the upstream account in the UI:
+   - start the app or run `python proxy_service.py`
+   - open `Telegram -> Settings`
+   - open `https://my.telegram.org/auth?to=apps`
+   - copy `api_id` and `api_hash`
+   - save them
+   - request the Telegram login code and complete 2FA if prompted
+   - use `Clear Keychain` in the same panel if you want to wipe the saved Telegram credentials and session
 5. Verify the folder named `Cloud` exists and contains the chats you want:
    ```bash
    python list_chat_folders.py
    ```
+   Only chats placed in that special `Cloud` folder are exposed to downstream proxy clients.
 6. Start the proxy service:
    ```bash
    python proxy_service.py
@@ -224,7 +210,7 @@ Once `python proxy_service.py` is running, you can list the chats exposed throug
 python list_mcp_chats.py
 ```
 
-The script loads `~/.tlt-proxy/.env`, uses the local MCP defaults (`127.0.0.1:8791/mcp`), reads the bearer token from `TP_MCP_TOKEN` or `~/.tlt-proxy/mcp_token`, initializes an MCP session, and calls `telegram.list_chats`.
+The script loads `~/.tlt-proxy/.env`, uses the local MCP defaults (`127.0.0.1:8791/mcp`), reads the bearer token from `TP_MCP_TOKEN` or the local macOS Keychain entry, initializes an MCP session, and calls `telegram.list_chats`.
 
 Useful flags:
 
@@ -347,7 +333,7 @@ launchctl kickstart -k gui/$(id -u)/dev.telethon-proxy
 
 ### Electron desktop shell
 
-The repo now includes an Electron app entrypoint that opens the dashboard UI as a desktop window and treats the Python proxy service as the background component.
+The repo now includes an Electron app entrypoint that opens the desktop UI from local app assets and treats the Python proxy service as the background component.
 
 From the repo root:
 
@@ -358,9 +344,13 @@ npm run app:dev
 
 Behavior:
 
-- if the local dashboard is already running on `http://127.0.0.1:8788`, Electron reuses it
-- otherwise Electron starts `telegram-project/proxy_service.py` in the background and waits for the dashboard to come up
-- the web UI itself now lives in `telegram-project/webui/` and is served by the Python dashboard service
+- if the local background API is already running on `http://127.0.0.1:8788`, Electron reuses it
+- otherwise Electron starts `telegram-project/proxy_service.py` in the background and waits for the API to come up
+- the desktop renderer lives in `telegram-project/webui/` and is loaded directly by Electron, while the Python service only serves JSON API routes
+- the dashboard now groups Telegram features under a single `Telegram` section with `Chats`, `APIs`, and `Settings`
+- the `Telegram -> Settings` panel walks through `my.telegram.org` app key setup, login code entry, and 2FA, stores the upstream keys/session in macOS Keychain, and can clear them again
+- closing the app window hides it to the background instead of quitting
+- use the system tray/menu bar icon to reopen the window or quit the app completely
 
 To build a distributable macOS app bundle:
 

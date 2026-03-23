@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from "electron";
+import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, shell, clipboard } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,13 +11,17 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const TELEGRAM_DIR = path.join(ROOT_DIR, "telegram-project");
 const DASHBOARD_HOST = process.env.TP_DASHBOARD_HOST || "127.0.0.1";
 const DASHBOARD_PORT = Number(process.env.TP_DASHBOARD_PORT || "8788");
-const DASHBOARD_URL = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/`;
+const BACKGROUND_API_BASE = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`;
 const PYTHON_BIN = process.env.TP_PYTHON_BIN || "python3";
+const UI_ENTRY = path.join(ROOT_DIR, "telegram-project", "webui", "index.html");
+const SMOKE_MODE = process.env.TP_SMOKE === "1";
+const REQUIRED_API_PATHS = ["/api/overview", "/api/telegram/auth", "/api/mcp/token", "/api/whatsapp/auth"];
 
 let mainWindow = null;
 let backgroundProcess = null;
 let isQuitting = false;
 let ownsBackgroundProcess = false;
+let tray = null;
 
 
 function backgroundEnv() {
@@ -26,6 +30,7 @@ function backgroundEnv() {
     PYTHONUNBUFFERED: "1",
     TP_DASHBOARD_HOST: DASHBOARD_HOST,
     TP_DASHBOARD_PORT: String(DASHBOARD_PORT),
+    ...(app.isPackaged ? { TP_NODE_BIN: process.execPath } : {}),
   };
 }
 
@@ -53,7 +58,8 @@ function startBackgroundService() {
     return backgroundProcess;
   }
   const spec = backgroundSpec();
-  if (!fs.existsSync(spec.command)) {
+  const commandLooksLikePath = spec.command.includes(path.sep) || spec.command.startsWith(".");
+  if (commandLooksLikePath && !fs.existsSync(spec.command)) {
     throw new Error(`Background service executable not found: ${spec.command}`);
   }
   ownsBackgroundProcess = true;
@@ -90,8 +96,7 @@ async function waitForDashboard(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(new URL("/api/overview", DASHBOARD_URL));
-      if (response.ok) {
+      if (await isDashboardReady()) {
         return;
       }
     } catch {
@@ -99,23 +104,28 @@ async function waitForDashboard(timeoutMs = 30000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Dashboard did not become ready at ${DASHBOARD_URL} within ${timeoutMs}ms`);
+  throw new Error(`Background API did not become ready at ${BACKGROUND_API_BASE} within ${timeoutMs}ms`);
 }
 
 
 async function isDashboardReady() {
-  try {
-    const response = await fetch(new URL("/api/overview", DASHBOARD_URL));
-    return response.ok;
-  } catch {
-    return false;
+  for (const routePath of REQUIRED_API_PATHS) {
+    try {
+      const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`));
+      if (!response.ok) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
   }
+  return true;
 }
 
 
 async function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.focus();
+    showMainWindow();
     return mainWindow;
   }
   await waitForDashboard();
@@ -131,13 +141,142 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, "preload.cjs"),
     },
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  mainWindow.on("close", (event) => {
+    if (isQuitting) {
+      return;
+    }
+    event.preventDefault();
+    hideMainWindow();
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-  await mainWindow.loadURL(DASHBOARD_URL);
+  await mainWindow.loadFile(UI_ENTRY);
+  showMainWindow();
   return mainWindow;
+}
+
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (process.platform === "darwin") {
+    if (SMOKE_MODE) {
+      return;
+    }
+    app.dock.show();
+  }
+  mainWindow.show();
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+  updateTrayMenu();
+}
+
+
+function hideMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.hide();
+  if (process.platform === "darwin") {
+    if (SMOKE_MODE) {
+      return;
+    }
+    app.dock.hide();
+  }
+  updateTrayMenu();
+}
+
+
+function createTrayImage() {
+  if (process.platform === "darwin") {
+    return nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s1vZ1cAAAAASUVORK5CYII=");
+  }
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+      <g fill="none" fill-rule="evenodd">
+        <path d="M5.5 7h11" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M5.5 11h11" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
+        <path d="M5.5 15h7" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
+      </g>
+    </svg>
+  `;
+  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  return image.resize({ width: 18, height: 18 });
+}
+
+
+function updateTrayMenu() {
+  if (!tray) {
+    return;
+  }
+  const visible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: visible ? "Hide Telethon Proxy" : "Open Telethon Proxy",
+        click: async () => {
+          if (!mainWindow || mainWindow.isDestroyed()) {
+            await createWindow();
+            return;
+          }
+          if (mainWindow.isVisible()) {
+            hideMainWindow();
+          } else {
+            showMainWindow();
+          }
+          updateTrayMenu();
+        },
+      },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+}
+
+
+function createTray() {
+  if (tray) {
+    return tray;
+  }
+  if (SMOKE_MODE) {
+    return null;
+  }
+  tray = new Tray(createTrayImage());
+  tray.setToolTip("Telethon Proxy");
+  if (process.platform === "darwin") {
+    tray.setTitle("TP");
+  }
+  tray.on("click", async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      await createWindow();
+      updateTrayMenu();
+      return;
+    }
+    if (mainWindow.isVisible()) {
+      hideMainWindow();
+    } else {
+      showMainWindow();
+    }
+    updateTrayMenu();
+  });
+  updateTrayMenu();
+  return tray;
 }
 
 
@@ -148,15 +287,69 @@ app.on("before-quit", () => {
   }
 });
 
+ipcMain.handle("proxy:api-base", () => BACKGROUND_API_BASE);
+ipcMain.handle("proxy:copy-text", (_event, value) => {
+  clipboard.writeText(String(value || ""));
+  return { ok: true };
+});
+
+async function readJsonOrText(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text || `Request failed with status ${response.status}` };
+  }
+}
+
+function formatApiError(routePath, status, payload) {
+  if (status === 404 && String(routePath).startsWith("/api/telegram/auth")) {
+    return "Telegram Settings needs a newer background service. Restart the app or stop the older local proxy service and try again.";
+  }
+  if (status === 404 && String(routePath).startsWith("/api/whatsapp/auth")) {
+    return "WhatsApp support needs a newer background service. Restart the app or stop the older local proxy service and try again.";
+  }
+  return payload.error || `Request failed with status ${status}`;
+}
+
+ipcMain.handle("proxy:get-json", async (_event, routePath) => {
+  const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`));
+  const payload = await readJsonOrText(response);
+  if (!response.ok) {
+    throw new Error(formatApiError(routePath, response.status, payload));
+  }
+  return payload;
+});
+ipcMain.handle("proxy:post-json", async (_event, routePath, payload) => {
+  const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await readJsonOrText(response);
+  if (!response.ok) {
+    throw new Error(formatApiError(routePath, response.status, data));
+  }
+  return data;
+});
+
 app.whenReady().then(async () => {
+  if (process.platform === "darwin" && !SMOKE_MODE) {
+    app.setActivationPolicy("accessory");
+  }
+  createTray();
   if (!(await isDashboardReady())) {
     startBackgroundService();
   }
   await createWindow();
+  updateTrayMenu();
   app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       await createWindow();
+    } else {
+      showMainWindow();
     }
+    updateTrayMenu();
   });
 }).catch((error) => {
   console.error(error);
@@ -164,7 +357,5 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  updateTrayMenu();
 });

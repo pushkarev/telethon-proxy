@@ -11,6 +11,7 @@
     "app:bundle-python": "sh ./scripts/build-python-service.sh",
     "app:pack": "npm run app:bundle-python && electron-builder --dir",
     "app:dist": "npm run app:bundle-python && electron-builder",
+    "app:smoke": "node scripts/electron-smoke.mjs",
     "browser:run": "node scripts/playwright-runner.mjs",
     "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
   },
@@ -23,6 +24,8 @@
     "productName": "Telethon Proxy",
     "files": [
       "electron/**/*",
+      "telegram-project/webui/**/*",
+      "whatsapp-project/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -38,6 +41,9 @@
       "output": "dist/electron"
     },
     "mac": {
+      "extendInfo": {
+        "LSUIElement": true
+      },
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -46,6 +52,8 @@
     }
   },
   "dependencies": {
-    "playwright": "^1.58.2"
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "playwright": "^1.58.2",
+    "qrcode": "^1.5.4"
   }
 }

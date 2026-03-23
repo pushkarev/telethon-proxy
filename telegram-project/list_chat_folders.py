@@ -6,7 +6,9 @@ from typing import Iterable
 from config_paths import load_project_env
 from telethon import functions, types, utils
 from telethon import TelegramClient
-from telegram_auth import prompt_value, resolve_runtime_credentials
+from telethon.sessions import StringSession
+
+from telegram_proxy.config import ProxyConfig
 
 
 def title_text(title: object) -> str:
@@ -82,20 +84,23 @@ def iter_named_filters(filters: Iterable[object]):
 
 async def amain() -> None:
     load_project_env()
+    config = ProxyConfig.from_env()
+    if not config.upstream_api_id or not config.upstream_api_hash:
+        raise SystemExit("Telegram credentials are not configured. Use Telegram -> Settings in the dashboard first.")
 
-    credentials = resolve_runtime_credentials(require_phone=False)
-    session_name = os.getenv("TG_SESSION_NAME", str(Path.home() / ".tlt-proxy/sessions/sample_account"))
-
+    session_name = os.getenv("TG_SESSION_NAME", str(config.upstream_session_path))
     session_path = Path(session_name).expanduser()
     session_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config.has_upstream_session_material(session_path=session_path):
+        raise SystemExit("Telegram is not authorized yet. Use Telegram -> Settings in the dashboard first.")
 
-    client = TelegramClient(str(session_path), credentials.api_id, credentials.api_hash)
+    session = StringSession(config.upstream_session_string) if config.upstream_session_string else str(session_path)
+    client = TelegramClient(session, config.upstream_api_id, config.upstream_api_hash)
     await client.connect()
 
     try:
         if not await client.is_user_authorized():
-            phone = credentials.phone or prompt_value("TG_PHONE", "Telegram phone number: ")[0]
-            await client.start(phone=phone)
+            raise SystemExit("Telegram is not authorized yet. Use Telegram -> Settings in the dashboard first.")
 
         filters_result = await client(functions.messages.GetDialogFiltersRequest())
         named_filters = list(iter_named_filters(filters_result.filters))
