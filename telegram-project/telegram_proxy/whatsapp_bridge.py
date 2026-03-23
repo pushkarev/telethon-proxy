@@ -17,17 +17,28 @@ class WhatsAppBridgeError(RuntimeError):
     pass
 
 
+def _resolve_existing_command(candidate: str | None, *, allow_path_lookup: bool) -> str | None:
+    if not candidate:
+        return None
+    expanded = os.path.expanduser(candidate)
+    if Path(expanded).exists():
+        return expanded
+    if allow_path_lookup:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
 def resolve_node_bin(explicit: str | None = None) -> str:
-    candidates = [
-        explicit,
-        os.getenv("TP_NODE_BIN"),
-        shutil.which("node"),
-        "/opt/homebrew/bin/node",
-        "/usr/local/bin/node",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
+    for candidate in (explicit, os.getenv("TP_NODE_BIN")):
+        resolved = _resolve_existing_command(candidate, allow_path_lookup=True)
+        if resolved:
+            return resolved
+    for candidate in (shutil.which("node"), "/opt/homebrew/bin/node", "/usr/local/bin/node"):
+        resolved = _resolve_existing_command(candidate, allow_path_lookup=False)
+        if resolved:
+            return resolved
     return explicit or os.getenv("TP_NODE_BIN") or "node"
 
 

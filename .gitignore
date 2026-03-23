@@ -7,3 +7,4 @@ node_modules/
 .openclaw/playwright-profile/
 build/
 dist/
+tmp-ui-*.png

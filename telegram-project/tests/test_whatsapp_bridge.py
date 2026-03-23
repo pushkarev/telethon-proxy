@@ -11,6 +11,12 @@ class WhatsAppBridgeTests(unittest.TestCase):
         with mock.patch("telegram_proxy.whatsapp_bridge.Path.exists", return_value=True):
             self.assertEqual(resolve_node_bin("/custom/node"), "/custom/node")
 
+    def test_resolve_node_bin_honors_explicit_command_on_path(self):
+        with mock.patch("telegram_proxy.whatsapp_bridge.Path.exists", return_value=False):
+            with mock.patch("telegram_proxy.whatsapp_bridge.shutil.which") as which:
+                which.side_effect = lambda value: "/custom/bin/node20" if value == "node20" else None
+                self.assertEqual(resolve_node_bin("node20"), "/custom/bin/node20")
+
     def test_resolve_node_bin_falls_back_to_homebrew_path(self):
         if not Path("/opt/homebrew/bin/node").exists():
             self.skipTest("Homebrew node is not installed at /opt/homebrew/bin/node on this host")

@@ -2,6 +2,7 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import QRCode from "qrcode";
 import makeWASocket, {
@@ -20,6 +21,7 @@ const AUTH_DIR = path.resolve(
 const MAX_CHAT_MESSAGES = 200;
 const MAX_UPDATES = 500;
 const RECONNECT_DELAY_MS = 2_000;
+const APP_STATE_COLLECTIONS = ["critical_block", "critical_unblock_low", "regular", "regular_low", "regular_high"];
 
 function nowIso() {
   return new Date().toISOString();
@@ -62,6 +64,42 @@ function firstDefined(...values) {
     }
   }
   return null;
+}
+
+function jidUser(jid) {
+  if (!jid) {
+    return null;
+  }
+  const [local] = String(jid).split("@", 1);
+  if (!local) {
+    return null;
+  }
+  const [user] = local.split(":", 1);
+  return user || null;
+}
+
+function displayTitleFromJid(jid) {
+  const user = jidUser(jid);
+  return user || jid || null;
+}
+
+export function peerJidsFromLidMappings(mappingEntries, { meId = null, meLid = null } = {}) {
+  const mePnUser = jidUser(meId);
+  const meLidUser = jidUser(meLid);
+  const peerJids = new Set();
+  for (const [pnUser, lidUser] of mappingEntries || []) {
+    if (!pnUser || String(pnUser).endsWith("_reverse")) {
+      continue;
+    }
+    if (String(pnUser) === String(mePnUser)) {
+      continue;
+    }
+    if (lidUser !== undefined && lidUser !== null && String(lidUser) === String(meLidUser)) {
+      continue;
+    }
+    peerJids.add(`${pnUser}@s.whatsapp.net`);
+  }
+  return [...peerJids].sort();
 }
 
 function extractText(message) {
@@ -172,6 +210,7 @@ class WhatsAppBridgeService {
     this.registered = Boolean(sock.authState?.creds?.registered);
     this.connection = "connecting";
     this.lastError = null;
+    await this._seedChatsFromPersistedMappings(sock.authState?.creds);
 
     sock.ev.on("creds.update", async () => {
       this.registered = Boolean(sock.authState?.creds?.registered);
@@ -223,6 +262,12 @@ class WhatsAppBridgeService {
       this.qrAscii = null;
       this.qrSvg = null;
       this.lastError = null;
+      try {
+        await sock.resyncAppState(APP_STATE_COLLECTIONS, false);
+      } catch (error) {
+        this.lastError = error?.message || String(error);
+      }
+      await this._seedChatsFromPersistedMappings(sock.authState?.creds);
       return;
     }
     if (update.connection === "close") {
@@ -450,16 +495,61 @@ class WhatsAppBridgeService {
     return null;
   }
 
+  _cloudFilterMode() {
+    return this._cloudLabelRecord() ? "cloud-label" : "all-chats-fallback";
+  }
+
+  async _seedChatsFromPersistedMappings(creds = null) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(AUTH_DIR);
+    } catch {
+      return;
+    }
+
+    const mappingEntries = [];
+    for (const entry of entries) {
+      const match = /^lid-mapping-(.+)\.json$/.exec(entry);
+      if (!match || match[1].endsWith("_reverse")) {
+        continue;
+      }
+      try {
+        const raw = await fs.readFile(path.join(AUTH_DIR, entry), "utf-8");
+        mappingEntries.push([match[1], JSON.parse(raw)]);
+      } catch {
+        // ignore malformed persisted mapping files
+      }
+    }
+
+    const peerJids = peerJidsFromLidMappings(mappingEntries, {
+      meId: creds?.me?.id || this.me?.id || null,
+      meLid: creds?.me?.lid || this.me?.lid || null,
+    });
+
+    for (const jid of peerJids) {
+      const existing = this.chats.get(jid) || { jid };
+      this.chats.set(jid, {
+        ...existing,
+        jid,
+        name: firstDefined(existing.name, this.contacts.get(jid)?.name, displayTitleFromJid(jid)),
+        unreadCount: existing.unreadCount || 0,
+        archived: Boolean(existing.archived),
+        lastMessageAt: existing.lastMessageAt || null,
+        lastMessageText: existing.lastMessageText || null,
+      });
+    }
+  }
+
   _isAllowedChat(jid) {
     const label = this._cloudLabelRecord();
     if (!label) {
-      return false;
+      return this.chats.has(jid);
     }
     return Boolean(this.chatLabels.get(jid)?.has(label.id));
   }
 
   _chatTitle(jid, chat) {
-    return firstDefined(chat?.name, this.contacts.get(jid)?.name, jid);
+    return firstDefined(chat?.name, this.contacts.get(jid)?.name, displayTitleFromJid(jid), jid);
   }
 
   _serializeChat(jid, chat) {
@@ -501,12 +591,13 @@ class WhatsAppBridgeService {
 
   _status(limit = 200) {
     const cloudLabel = this._cloudLabelRecord();
+    const hasSession = this.registered || this.connected || Boolean(this.me);
     return {
       ok: true,
       connection: this.connection,
       connected: this.connected,
-      has_session: this.registered,
-      authorized: this.registered,
+      has_session: hasSession,
+      authorized: hasSession,
       qr_available: Boolean(this.qrRaw),
       qr_raw: this.qrRaw,
       qr_ascii: this.qrAscii,
@@ -514,6 +605,7 @@ class WhatsAppBridgeService {
       cloud_label_name: CLOUD_LABEL_NAME,
       cloud_label_found: Boolean(cloudLabel),
       cloud_label: cloudLabel,
+      cloud_filter_mode: this._cloudFilterMode(),
       auth_dir: AUTH_DIR,
       me: this.me,
       started_at: this.startedAt,
@@ -697,4 +789,6 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-await service.start();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await service.start();
+}
