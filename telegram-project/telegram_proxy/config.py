@@ -47,6 +47,7 @@ class ProxyConfig:
     whatsapp_cloud_label_name: str = "Cloud"
     whatsapp_auth_dir: str = str(DEFAULT_CONFIG_HOME / "whatsapp-auth")
     imessage_db_name: str = str(Path.home() / "Library" / "Messages" / "chat.db")
+    imessage_visible_chats_name: str = str(DEFAULT_CONFIG_HOME / "imessage_visible_chats.json")
 
     @property
     def listen_host(self) -> str:
@@ -98,6 +99,12 @@ class ProxyConfig:
     @property
     def imessage_db_path(self) -> Path:
         return Path(self.imessage_db_name).expanduser()
+
+    @property
+    def imessage_visible_chats_path(self) -> Path:
+        path = Path(self.imessage_visible_chats_name).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
     def save_mcp_settings(self) -> None:
         payload = {
@@ -159,6 +166,10 @@ class ProxyConfig:
             whatsapp_cloud_label_name=os.getenv("TP_WHATSAPP_CLOUD_LABEL", os.getenv("TP_CLOUD_FOLDER", "Cloud")),
             whatsapp_auth_dir=os.getenv("TP_WHATSAPP_AUTH_DIR", str(DEFAULT_CONFIG_HOME / "whatsapp-auth")),
             imessage_db_name=os.getenv("TP_IMESSAGE_DB", str(Path.home() / "Library" / "Messages" / "chat.db")),
+            imessage_visible_chats_name=os.getenv(
+                "TP_IMESSAGE_VISIBLE_CHATS",
+                str(DEFAULT_CONFIG_HOME / "imessage_visible_chats.json"),
+            ),
         )
 
     @staticmethod

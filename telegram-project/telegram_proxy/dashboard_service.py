@@ -148,6 +148,9 @@ class ProxyDashboardServer:
             if method == "POST" and url.path.startswith("/api/whatsapp/auth/"):
                 await self._handle_whatsapp_auth_post(writer, url.path, body)
                 return
+            if method == "POST" and url.path == "/api/imessage/visible-chats":
+                await self._handle_imessage_visible_chats_post(writer, body)
+                return
             if method == "POST" and url.path == "/api/mtproto/enabled":
                 await self._handle_mtproto_enabled_post(writer, body)
                 return
@@ -300,10 +303,30 @@ class ProxyDashboardServer:
         if self.imessage is None:
             return {"chat": None, "messages": [], "error": "iMessage bridge is unavailable"}
         try:
-            payload = await self.imessage.get_chat(chat_id, limit=80)
+            payload = await self.imessage.get_local_chat(chat_id, limit=80)
         except IMessageBridgeError as exc:
             return {"chat": None, "messages": [], "error": str(exc)}
         return payload
+
+    async def _handle_imessage_visible_chats_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        if self.imessage is None:
+            await self._write_json(writer, 500, {"error": "iMessage bridge is unavailable"})
+            return
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        chat_id = str(payload.get("chat_id", "")).strip()
+        visible = bool(payload.get("visible"))
+        try:
+            await self.imessage.set_chat_visibility(chat_id=chat_id, visible=visible)
+            result = await self._build_imessage_auth()
+        except IMessageBridgeError as exc:
+            await self._write_json(writer, 400, {"error": str(exc)})
+            return
+        await self._write_json(writer, 200, result)
 
     async def _write_json(self, writer: asyncio.StreamWriter, status: int, payload: dict[str, object]) -> None:
         await self._write_response(
@@ -577,6 +600,7 @@ class ProxyDashboardServer:
             "title": dialog.title,
             "username": getattr(entity, "username", None),
             "kind": self._dialog_kind(dialog),
+            "last_message_at": getattr(dialog, "date", None).isoformat() if getattr(dialog, "date", None) else None,
         }
 
     def _serialize_message(self, message) -> dict[str, object]:

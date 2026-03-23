@@ -41,11 +41,7 @@
     <div class="workspace">
       <aside class="panel folder-rail">
         <div class="folder-title">Folders</div>
-        <button class="folder-button active" data-section="configuration">
-          <div class="folder-name">Configuration</div>
-          <div class="folder-meta">Proxy basics, dashboard endpoints, and the current upstream account.</div>
-        </button>
-        <button class="folder-button" data-section="telegram">
+        <button class="folder-button active" data-section="telegram">
           <div class="folder-label-row">
             <div class="folder-name" id="telegramFolderName">Telegram</div>
             <span class="connection-check" id="telegramConnectionCheck" hidden aria-hidden="true">✓</span>
@@ -73,35 +69,7 @@
       </aside>
 
       <div class="section-stack">
-        <section class="panel section-panel active" data-section-panel="configuration">
-          <div class="section-head">
-            <div>
-              <h2>Configuration</h2>
-              <div class="section-copy">Operational details for the local proxy, scope rules, and the current upstream account.</div>
-            </div>
-            <span class="badge" id="folderBadge">Cloud</span>
-          </div>
-          <div class="section-body">
-            <div class="overview-grid">
-              <div class="info-card">
-                <div class="info-card-head">
-                  <div class="section-kicker">Proxy Surface</div>
-                  <h3>Local endpoints and service policy</h3>
-                </div>
-                <div class="kv" id="configGrid"></div>
-              </div>
-              <div class="info-card">
-                <div class="info-card-head">
-                  <div class="section-kicker">Upstream</div>
-                  <h3>Authorized Telegram account</h3>
-                </div>
-                <div class="kv" id="upstreamGrid"></div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel section-panel" data-section-panel="telegram">
+        <section class="panel section-panel active" data-section-panel="telegram">
           <div class="section-head">
             <div>
               <h2>Telegram</h2>
@@ -372,41 +340,49 @@
           <div class="section-body">
             <div class="telegram-shell">
               <div class="telegram-nav">
-                <button class="imessage-pane-button active" data-imessage-pane="chats">Chats</button>
+                <button class="imessage-pane-button active" data-imessage-pane="all-chats">All chats</button>
+                <button class="imessage-pane-button" data-imessage-pane="visible-chats">Visible chats</button>
                 <button class="imessage-pane-button" data-imessage-pane="settings">Settings</button>
               </div>
 
-              <section class="imessage-pane active" data-imessage-pane-panel="chats">
-                <div class="credential-card auth-guide">
-                  <div class="row">
-                    <div class="title">Local visibility rule</div>
-                    <span class="pill">Messages app</span>
-                  </div>
-                  <div class="meta">
-                    Local chat metadata comes from the <span class="mono">Messages</span> app. Recent history comes from <span class="mono">chat.db</span> when macOS Full Disk Access allows it. The view mirrors local Messages threads, including iMessage, SMS, and RCS where available.
-                  </div>
-                </div>
-
-                <div class="chat-shell whatsapp-chat-shell">
-                  <div class="chat-sidebar">
+              <div class="chat-shell whatsapp-chat-shell" id="imessageChatShell">
+                <div class="chat-sidebar">
+                  <section class="imessage-pane active" data-imessage-pane-panel="all-chats">
                     <div class="sidebar-heading">
-                      <div class="section-kicker">Visible chats</div>
+                      <div class="section-kicker">All chats</div>
                       <h3>Local Messages</h3>
                     </div>
-                    <div class="chat-list" id="imessageChatList"></div>
-                  </div>
-                  <div class="chat-stage">
-                    <div class="chat-screen-head">
+                    <div class="chat-list" id="imessageAllChatList"></div>
+                  </section>
+
+                  <section class="imessage-pane" data-imessage-pane-panel="visible-chats">
+                    <div class="credential-card auth-guide">
                       <div class="row">
-                        <div class="title" id="imessageMessageHeading">Messages</div>
-                        <span class="pill" id="imessageChatKindPill">chat</span>
+                        <div class="title">Visible downstream set</div>
+                        <span class="pill">MCP scope</span>
                       </div>
-                      <div class="chat-screen-meta" id="imessageChatScreenMeta">Pick a Messages chat to inspect recent local history.</div>
+                      <div class="meta">
+                        Only the chats listed here are passed downstream. MCP chat listing, history, updates, and sends are restricted to this visible set.
+                      </div>
                     </div>
-                    <div class="message-list" id="imessageMessageList"></div>
-                  </div>
+                    <div class="sidebar-heading">
+                      <div class="section-kicker">Visible chats</div>
+                      <h3>Downstream Messages</h3>
+                    </div>
+                    <div class="chat-list" id="imessageVisibleChatList"></div>
+                  </section>
                 </div>
-              </section>
+                <div class="chat-stage">
+                  <div class="chat-screen-head">
+                    <div class="row">
+                      <div class="title" id="imessageMessageHeading">Messages</div>
+                      <span class="pill" id="imessageChatKindPill">chat</span>
+                    </div>
+                    <div class="chat-screen-meta" id="imessageChatScreenMeta">Pick a Messages chat to inspect recent local history.</div>
+                  </div>
+                  <div class="message-list" id="imessageMessageList"></div>
+                </div>
+              </div>
 
               <section class="imessage-pane" data-imessage-pane-panel="settings">
                 <div class="settings-grid whatsapp-settings-grid">

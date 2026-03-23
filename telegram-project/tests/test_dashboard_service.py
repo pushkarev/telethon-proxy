@@ -237,7 +237,7 @@ class _FakeWhatsApp:
 
 class _FakeIMessage:
     def __init__(self) -> None:
-        self.chats = [
+        self.all_chats = [
             {
                 "chat_id": "any;-;+15550000000",
                 "title": "Alice",
@@ -249,8 +249,10 @@ class _FakeIMessage:
                 "unread_count": 0,
             }
         ]
+        self.visible_chat_ids = {self.all_chats[0]["chat_id"]}
 
     async def get_status(self, *, limit=500):
+        visible_chats = [chat for chat in self.all_chats if chat["chat_id"] in self.visible_chat_ids]
         return {
             "ok": True,
             "available": True,
@@ -260,15 +262,18 @@ class _FakeIMessage:
             "database_accessible": False,
             "database_error": "Full Disk Access required",
             "accounts": [{"id": "account-1", "connection": "connected", "enabled": True, "service_type": "iMessage"}],
-            "chats": self.chats[:limit],
+            "all_chats": self.all_chats[:limit],
+            "visible_chats": visible_chats[:limit],
+            "visible_chat_ids": [chat["chat_id"] for chat in visible_chats[:limit]],
+            "chats": visible_chats[:limit],
             "db_path": "/Users/dmitry/Library/Messages/chat.db",
             "last_error": "Full Disk Access required",
         }
 
-    async def get_chat(self, chat_id, *, limit=80):
+    async def get_local_chat(self, chat_id, *, limit=80):
         return {
             "ok": True,
-            "chat": self.chats[0] if chat_id == self.chats[0]["chat_id"] else None,
+            "chat": self.all_chats[0] if chat_id == self.all_chats[0]["chat_id"] else None,
             "messages": [
                 {
                     "id": "imsg-1",
@@ -280,6 +285,13 @@ class _FakeIMessage:
                 }
             ][:limit],
         }
+
+    async def set_chat_visibility(self, *, chat_id: str, visible: bool):
+        if visible:
+            self.visible_chat_ids.add(chat_id)
+        else:
+            self.visible_chat_ids.discard(chat_id)
+        return await self.get_status()
 
 
 class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -348,6 +360,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["telegram_auth"]["keychain_backend"], "macOS Keychain")
         self.assertEqual(payload["whatsapp"]["chats"][0]["title"], "Cloud WA Chat")
         self.assertEqual(payload["imessage"]["chats"][0]["title"], "Alice")
+        self.assertEqual(payload["imessage"]["all_chats"][0]["title"], "Alice")
         self.assertTrue(payload["mcp"]["token_hidden"])
         self.assertTrue(payload["mcp"]["listening"])
         self.assertTrue(payload["mcp"]["bind_options"])
@@ -487,6 +500,17 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(body)
         self.assertTrue(payload["connected"])
         self.assertEqual(payload["chats"][0]["title"], "Alice")
+        self.assertEqual(payload["all_chats"][0]["title"], "Alice")
+
+    async def test_imessage_visible_chat_toggle_route(self):
+        status, body = await self._post(
+            "/api/imessage/visible-chats",
+            {"chat_id": "any;-;+15550000000", "visible": False},
+        )
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["visible_chats"], [])
+        self.assertEqual(payload["visible_chat_ids"], [])
 
     async def _get(self, path: str) -> tuple[int, str]:
         reader, writer = await asyncio.open_connection(self.config.dashboard_host, self.config.dashboard_port)

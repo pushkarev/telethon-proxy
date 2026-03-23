@@ -31,7 +31,10 @@ class ProxyService:
             cloud_label_name=config.whatsapp_cloud_label_name,
             auth_dir=config.whatsapp_auth_path,
         )
-        self.imessage = IMessageBridge(db_path=config.imessage_db_path)
+        self.imessage = IMessageBridge(
+            db_path=config.imessage_db_path,
+            visible_chats_path=config.imessage_visible_chats_path,
+        )
         self.telegram_auth = TelegramAuthService(config, self.upstream, secret_store=self.secret_store)
         self.auth = DownstreamAuthService(config)
         self.registry = DownstreamRegistry(config.downstream_registry_path)

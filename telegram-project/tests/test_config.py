@@ -79,3 +79,9 @@ class ProxyConfigTests(unittest.TestCase):
 
         self.assertEqual(config.mcp_host, "100.92.237.54")
         self.assertEqual(config.mcp_port, 8795)
+
+    def test_imessage_visible_chats_path_uses_configured_location(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = ProxyConfig(imessage_visible_chats_name=str(Path(tmp) / "imessage-visible.json"))
+
+            self.assertEqual(config.imessage_visible_chats_path, Path(tmp) / "imessage-visible.json")

@@ -237,8 +237,16 @@ end tell
 
 
 class IMessageBridge:
-    def __init__(self, *, db_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        db_path: Path | None = None,
+        visible_chats_path: Path | None = None,
+    ) -> None:
         self.db_path = Path(db_path or DEFAULT_MESSAGES_DB).expanduser()
+        self.visible_chats_path = Path(visible_chats_path or (self.db_path.parent / "visible_chats.json")).expanduser()
+        self.visible_chats_path.parent.mkdir(parents=True, exist_ok=True)
+        self._visible_chat_ids = self._load_visible_chat_ids()
 
     async def start(self) -> None:
         return None
@@ -264,14 +272,21 @@ class IMessageBridge:
     async def send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
         return await asyncio.to_thread(self._send_message_sync, chat_id, text)
 
+    async def get_local_chat(self, chat_id: str, *, limit: int = 50) -> dict[str, object]:
+        return await asyncio.to_thread(self._get_chat_sync, chat_id, limit, False)
+
+    async def set_chat_visibility(self, *, chat_id: str, visible: bool) -> dict[str, object]:
+        return await asyncio.to_thread(self._set_chat_visibility_sync, chat_id, visible)
+
     def _get_status_sync(self, limit: int) -> dict[str, object]:
         accounts, account_error = self._safe_accounts()
-        chats, chat_error, db_accessible, db_error = self._safe_chat_collection(limit)
+        all_chats, chat_error, db_accessible, db_error = self._safe_chat_collection(limit)
+        visible_chats = self._filter_visible_chats(all_chats)
         connected = any(str(account.get("connection", "")).lower() == "connected" for account in accounts)
         last_error = account_error or db_error or chat_error
         return {
             "ok": True,
-            "available": bool(accounts or chats or not last_error),
+            "available": bool(accounts or all_chats or not last_error),
             "connected": connected,
             "has_session": bool(accounts),
             "messages_app_accessible": account_error is None or chat_error is None,
@@ -281,28 +296,36 @@ class IMessageBridge:
             "automation_hint": "Grant Automation access to Messages and Full Disk Access for history reads if macOS prompts.",
             "db_path": str(self.db_path),
             "accounts": accounts,
-            "chats": chats,
+            "all_chats": all_chats,
+            "visible_chats": visible_chats,
+            "visible_chat_ids": [chat["chat_id"] for chat in visible_chats],
+            "chats": visible_chats,
             "last_error": last_error,
         }
 
     def _get_chats_sync(self, limit: int) -> dict[str, object]:
-        chats, chat_error, db_accessible, db_error = self._safe_chat_collection(limit)
-        if chat_error and not chats:
+        all_chats, chat_error, db_accessible, db_error = self._safe_chat_collection(limit)
+        visible_chats = self._filter_visible_chats(all_chats)
+        if chat_error and not all_chats:
             raise IMessageBridgeError(chat_error)
         return {
             "ok": True,
-            "chats": chats,
+            "chats": visible_chats,
             "database_accessible": db_accessible,
             "database_error": db_error,
         }
 
-    def _get_chat_sync(self, chat_id: str, limit: int) -> dict[str, object]:
+    def _get_chat_sync(self, chat_id: str, limit: int, visible_only: bool = True) -> dict[str, object]:
         chat_id = str(chat_id or "").strip()
         if not chat_id:
             raise IMessageBridgeError("iMessage chat_id is required")
-        chats, _chat_error, _db_accessible, _db_error = self._safe_chat_collection(500)
+        chats, _chat_error, _db_accessible, _db_error = self._safe_chat_collection(1000)
+        if visible_only:
+            chats = self._filter_visible_chats(chats)
         chat = next((item for item in chats if item.get("chat_id") == chat_id), None)
         if chat is None:
+            if visible_only:
+                raise IMessageBridgeError(f"iMessage chat is not visible downstream: {chat_id}")
             raise IMessageBridgeError(f"Unknown iMessage chat: {chat_id}")
         try:
             messages = self._query_chat_messages(chat_id, limit)
@@ -311,7 +334,8 @@ class IMessageBridge:
         return {"ok": True, "chat": chat, "messages": messages}
 
     def _get_updates_sync(self, limit: int) -> dict[str, object]:
-        messages = self._query_recent_messages(limit)
+        messages = [message for message in self._query_recent_messages(limit=max(limit * 4, 200)) if self._is_visible_chat_id(message.get("chat_id"))]
+        messages = messages[-limit:]
         updates = [
             {
                 "kind": "new_message",
@@ -330,6 +354,8 @@ class IMessageBridge:
             raise IMessageBridgeError("iMessage chat_id is required")
         if not message_text:
             raise IMessageBridgeError("Message text is required")
+        if not self._is_visible_chat_id(chat_id):
+            raise IMessageBridgeError(f"iMessage chat is not visible downstream: {chat_id}")
         script = f"""
 tell application "Messages"
   repeat with c in every chat
@@ -354,6 +380,33 @@ error "iMessage chat not found"
             "kind": "text",
         }
         return {"ok": True, "message": message}
+
+    def _set_chat_visibility_sync(self, chat_id: str, visible: bool) -> dict[str, object]:
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_chat_id:
+            raise IMessageBridgeError("iMessage chat_id is required")
+        chats, chat_error, _db_accessible, _db_error = self._safe_chat_collection(5000)
+        if not any(chat.get("chat_id") == normalized_chat_id for chat in chats):
+            if chat_error and not chats:
+                raise IMessageBridgeError(chat_error)
+            raise IMessageBridgeError(f"Unknown iMessage chat: {normalized_chat_id}")
+        updated = set(self._visible_chat_ids)
+        if visible:
+            updated.add(normalized_chat_id)
+        else:
+            updated.discard(normalized_chat_id)
+        self._visible_chat_ids = updated
+        self._save_visible_chat_ids()
+        visible_chats = self._filter_visible_chats(chats)
+        return {
+            "ok": True,
+            "chat_id": normalized_chat_id,
+            "visible": visible,
+            "visible_chat_ids": [chat["chat_id"] for chat in visible_chats],
+            "visible_chats": visible_chats,
+            "all_chats": chats,
+            "chats": visible_chats,
+        }
 
     def _safe_accounts(self) -> tuple[list[dict[str, object]], str | None]:
         try:
@@ -380,6 +433,35 @@ error "iMessage chat not found"
 
         merged = self._merge_chats(script_chats, db_summaries)
         return merged[:limit], chat_error, db_accessible, db_error
+
+    def _filter_visible_chats(self, chats: list[dict[str, object]]) -> list[dict[str, object]]:
+        return [chat for chat in chats if self._is_visible_chat_id(chat.get("chat_id"))]
+
+    def _is_visible_chat_id(self, chat_id: object) -> bool:
+        normalized = str(chat_id or "").strip()
+        return bool(normalized) and normalized in self._visible_chat_ids
+
+    def _load_visible_chat_ids(self) -> set[str]:
+        if not self.visible_chats_path.exists():
+            return set()
+        try:
+            payload = json.loads(self.visible_chats_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        if not isinstance(payload, dict):
+            return set()
+        chat_ids = payload.get("chat_ids")
+        if not isinstance(chat_ids, list):
+            return set()
+        return {str(chat_id).strip() for chat_id in chat_ids if str(chat_id).strip()}
+
+    def _save_visible_chat_ids(self) -> None:
+        payload = {
+            "chat_ids": sorted(self._visible_chat_ids),
+        }
+        tmp_path = self.visible_chats_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        tmp_path.replace(self.visible_chats_path)
 
     def _merge_chats(
         self,

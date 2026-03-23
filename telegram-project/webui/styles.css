@@ -520,6 +520,43 @@ h1 {
 .chat {
   cursor: pointer;
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat.chat-compact {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.chat-title-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.chat-inline-date {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.chat-compact-meta {
+  display: none;
+}
+
+.chat-visibility-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  cursor: pointer;
+}
+
+.chat-visibility-toggle input {
+  margin: 0;
+  accent-color: var(--forest);
 }
 
 .chat:hover {
@@ -538,17 +575,24 @@ h1 {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+  min-width: 0;
+}
+
+.row > * {
+  min-width: 0;
 }
 
 .title {
   font-size: 17px;
   line-height: 1.1;
+  overflow-wrap: anywhere;
 }
 
 .meta {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .settings-grid {
@@ -785,6 +829,10 @@ h1 {
   gap: 14px;
 }
 
+.chat-shell.hidden {
+  display: none;
+}
+
 .whatsapp-chat-shell {
   grid-column: 1 / -1;
 }
@@ -793,18 +841,30 @@ h1 {
   display: grid;
   gap: 12px;
   align-content: start;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .sidebar-heading {
   padding: 2px 4px 0;
   display: grid;
   gap: 4px;
+  min-width: 0;
+}
+
+.chat-list {
+  min-width: 0;
+}
+
+.imessage-pane {
+  min-width: 0;
 }
 
 .chat-stage {
   border: 1px solid rgba(24, 32, 43, 0.08);
   border-radius: 22px;
   overflow: hidden;
+  min-width: 0;
   background:
     radial-gradient(circle at top left, rgba(54, 101, 166, 0.08), transparent 28%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(252, 246, 237, 0.96));

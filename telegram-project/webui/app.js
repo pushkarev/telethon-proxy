@@ -1,10 +1,10 @@
 let selectedPeerId = null;
 let selectedWhatsAppJid = null;
 let selectedIMessageChatId = null;
-let activeSection = "configuration";
+let activeSection = "telegram";
 let activeTelegramPane = "chats";
 let activeWhatsAppPane = "chats";
-let activeIMessagePane = "chats";
+let activeIMessagePane = "all-chats";
 let telegramAuthState = null;
 let whatsappAuthState = null;
 let imessageAuthState = null;
@@ -56,11 +56,28 @@ const DEFAULT_IMESSAGE_AUTH = {
   automation_hint: "",
   db_path: "",
   accounts: [],
+  all_chats: [],
+  visible_chats: [],
+  visible_chat_ids: [],
   chats: [],
   last_error: null,
 };
 
 function el(id) { return document.getElementById(id); }
+
+function setText(id, value) {
+  const node = el(id);
+  if (node) {
+    node.textContent = value;
+  }
+}
+
+function setHtml(id, value) {
+  const node = el(id);
+  if (node) {
+    node.innerHTML = value;
+  }
+}
 
 function formatApiError(url, status, payload) {
   if (status === 404 && String(url).startsWith("/api/telegram/auth")) {
@@ -92,6 +109,18 @@ function fmtDay(value) {
 
 function esc(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function compactLastSeen(value) {
+  return value ? `last ${fmtDate(value)}` : "no recent messages";
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 function setNotice(message, tone = "error") {
@@ -179,6 +208,37 @@ function setActiveIMessagePane(pane) {
   document.querySelectorAll(".imessage-pane").forEach((node) => {
     node.classList.toggle("active", node.dataset.imessagePanePanel === pane);
   });
+  const shell = el("imessageChatShell");
+  if (shell) {
+    shell.classList.toggle("hidden", pane === "settings");
+  }
+}
+
+function getIMessageAllChats(state = imessageAuthState) {
+  if (Array.isArray(state?.all_chats)) {
+    return state.all_chats;
+  }
+  if (Array.isArray(state?.chats)) {
+    return state.chats;
+  }
+  return [];
+}
+
+function getIMessageVisibleChats(state = imessageAuthState) {
+  if (Array.isArray(state?.visible_chats)) {
+    return state.visible_chats;
+  }
+  if (Array.isArray(state?.chats)) {
+    return state.chats;
+  }
+  return [];
+}
+
+function getIMessageVisibleChatIds(state = imessageAuthState) {
+  if (Array.isArray(state?.visible_chat_ids)) {
+    return state.visible_chat_ids;
+  }
+  return getIMessageVisibleChats(state).map((chat) => chat.chat_id);
 }
 
 function setConnectionCheck(id, connected, label) {
@@ -320,9 +380,21 @@ async function loadOverview() {
     await loadWhatsAppChat(selectedWhatsAppJid);
   }
 
-  const imessageChats = Array.isArray(data.imessage.chats) ? data.imessage.chats : [];
-  if (!selectedIMessageChatId && imessageChats.length) {
-    selectedIMessageChatId = imessageChats[0].chat_id;
+  const imessageAllChats = getIMessageAllChats(data.imessage);
+  const imessageVisibleChats = getIMessageVisibleChats(data.imessage);
+  const preferredIMessageChats = activeIMessagePane === "visible-chats" ? imessageVisibleChats : imessageAllChats;
+  const imessageAllChatIds = new Set(imessageAllChats.map((chat) => chat.chat_id));
+  if (selectedIMessageChatId && !imessageAllChatIds.has(selectedIMessageChatId)) {
+    selectedIMessageChatId = null;
+  }
+  if (activeIMessagePane === "visible-chats") {
+    const visibleChatIds = new Set(imessageVisibleChats.map((chat) => chat.chat_id));
+    if (selectedIMessageChatId && !visibleChatIds.has(selectedIMessageChatId)) {
+      selectedIMessageChatId = null;
+    }
+  }
+  if (!selectedIMessageChatId && preferredIMessageChats.length) {
+    selectedIMessageChatId = preferredIMessageChats[0].chat_id;
     await loadIMessageChat(selectedIMessageChatId);
   } else if (selectedIMessageChatId) {
     await loadIMessageChat(selectedIMessageChatId);
@@ -344,28 +416,30 @@ function renderOverview(data) {
   };
   const telegramChatCount = Array.isArray(data.chats) ? data.chats.length : 0;
   const whatsappChatCount = Array.isArray(whatsappAuth.chats) ? whatsappAuth.chats.length : 0;
-  const imessageChatCount = Array.isArray(imessageAuth.chats) ? imessageAuth.chats.length : 0;
+  const imessageChatCount = getIMessageVisibleChats(imessageAuth).length;
 
-  el("chatCount").textContent = telegramChatCount + whatsappChatCount + imessageChatCount;
-  el("dashboardAddress").textContent = `${data.config.dashboard_host}:${data.config.dashboard_port}`;
-  el("folderBadge").textContent = data.config.cloud_folder_name;
-  el("heroScopePill").textContent = `${data.config.cloud_folder_name} scope`;
-  el("telegramFolderName").textContent = `Telegram (${telegramChatCount})`;
-  el("whatsappFolderName").textContent = `WhatsApp (${whatsappChatCount})`;
-  el("imessageFolderName").textContent = `Messages (${imessageChatCount})`;
-  el("heroTelegramPill").textContent = telegramAuth.has_session ? "Telegram ready" : "Telegram login needed";
-  el("heroWhatsAppPill").textContent = whatsappAuth.connected
-    ? "WhatsApp connected"
-    : (whatsappAuth.has_session ? "WhatsApp reconnect needed" : "WhatsApp QR needed");
-  el("heroIMessagePill").textContent = imessageAuth.connected
-    ? "Messages connected"
-    : (imessageAuth.messages_app_accessible ? "Messages local access" : "Messages permission needed");
-  el("telegramBadge").textContent = telegramAuth.has_session ? "Authorized" : "Needs login";
-  el("whatsappBadge").textContent = whatsappAuth.connected ? "Connected" : (whatsappAuth.has_session ? "Reconnect needed" : "Needs QR");
-  el("imessageBadge").textContent = imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed");
+  setText("chatCount", telegramChatCount + whatsappChatCount + imessageChatCount);
+  setText("dashboardAddress", `${data.config.dashboard_host}:${data.config.dashboard_port}`);
+  setText("folderBadge", data.config.cloud_folder_name);
+  setText("heroScopePill", `${data.config.cloud_folder_name} scope`);
+  setText("telegramFolderName", `Telegram (${telegramChatCount})`);
+  setText("whatsappFolderName", `WhatsApp (${whatsappChatCount})`);
+  setText("imessageFolderName", `Messages (${imessageChatCount})`);
+  setText("heroTelegramPill", telegramAuth.has_session ? "Telegram ready" : "Telegram login needed");
+  setText(
+    "heroWhatsAppPill",
+    whatsappAuth.connected ? "WhatsApp connected" : (whatsappAuth.has_session ? "WhatsApp reconnect needed" : "WhatsApp QR needed"),
+  );
+  setText(
+    "heroIMessagePill",
+    imessageAuth.connected ? "Messages connected" : (imessageAuth.messages_app_accessible ? "Messages local access" : "Messages permission needed"),
+  );
+  setText("telegramBadge", telegramAuth.has_session ? "Authorized" : "Needs login");
+  setText("whatsappBadge", whatsappAuth.connected ? "Connected" : (whatsappAuth.has_session ? "Reconnect needed" : "Needs QR"));
+  setText("imessageBadge", imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed"));
   syncConnectionChecks({ telegramAuth, whatsappAuth, imessageAuth });
 
-  el("configGrid").innerHTML = [
+  setHtml("configGrid", [
     ["Telegram Cloud folder", data.config.cloud_folder_name],
     ["WhatsApp Cloud label", data.config.whatsapp_cloud_label_name || "Cloud"],
     ["Messages history DB", data.config.imessage_db_path || "default"],
@@ -373,13 +447,13 @@ function renderOverview(data) {
     ["MCP endpoint", `${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
     ["Reconnect backoff", `${data.config.upstream_reconnect_min_delay}s -> ${data.config.upstream_reconnect_max_delay}s`],
     ["Allow member listing", data.config.allow_member_listing ? "yes" : "no"],
-  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
+  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
 
-  el("upstreamGrid").innerHTML = [
+  setHtml("upstreamGrid", [
     ["Name", data.upstream.name || "unknown"],
     ["Phone", data.upstream.phone || "unknown"],
     ["Username", data.upstream.username ? "@" + data.upstream.username : "none"],
-  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
+  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
   renderMtprotoControls(data);
 
   el("mcpGrid").innerHTML = [
@@ -569,7 +643,10 @@ function renderChats(chats) {
             <div class="title">${esc(chat.title)}</div>
             <span class="pill">${esc(chat.kind)}</span>
           </div>
-          <div class="meta">${chat.username ? "@" + esc(chat.username) + "<br />" : ""}peer ${esc(chat.peer_id)}</div>
+          <div class="meta">
+            ${esc(firstNonEmpty(chat.username ? `@${chat.username}` : "", `peer ${chat.peer_id}`))}<br />
+            ${esc(compactLastSeen(chat.last_message_at))}
+          </div>
         </div>
       `).join("")
     : '<div class="empty">No Cloud chats are currently visible.</div>';
@@ -597,8 +674,7 @@ function renderWhatsAppChats(chats) {
           </div>
           <div class="meta">
             ${esc(chat.jid)}<br />
-            ${chat.labels?.length ? `labels ${esc(chat.labels.join(", "))}<br />` : ""}
-            ${chat.last_message_at ? `last ${esc(fmtDate(chat.last_message_at))}` : "no recent messages"}
+            ${esc(compactLastSeen(chat.last_message_at))}
           </div>
         </div>
       `).join("")
@@ -613,34 +689,79 @@ function renderWhatsAppChats(chats) {
   });
 }
 
-function renderIMessageChats(chats) {
-  if (!chats.length) {
-    selectedIMessageChatId = null;
-  }
-
-  el("imessageChatList").innerHTML = chats.length
+function renderIMessageChats(listId, chats, {
+  emptyText,
+  showVisibilityToggle = false,
+  visibleChatIds = [],
+  compact = false,
+} = {}) {
+  const container = el(listId);
+  const visibleSet = new Set(visibleChatIds);
+  container.innerHTML = chats.length
     ? chats.map((chat) => `
-        <div class="chat ${selectedIMessageChatId === chat.chat_id ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}">
+        <div class="chat ${compact ? "chat-compact" : ""} ${selectedIMessageChatId === chat.chat_id ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}">
           <div class="row">
             <div class="title">${esc(chat.title)}</div>
-            <span class="pill">${esc(chat.kind)}</span>
+            <div class="row chat-title-actions">
+              <span class="meta chat-inline-date">${esc(compactLastSeen(chat.last_message_at))}</span>
+              ${showVisibilityToggle
+                ? `<label class="chat-visibility-toggle">
+                    <input type="checkbox" data-chat-visibility="${esc(chat.chat_id)}"${visibleSet.has(chat.chat_id) ? " checked" : ""} />
+                    <span>Downstream</span>
+                  </label>`
+                : ""}
+              <span class="pill">${esc(chat.kind)}</span>
+            </div>
           </div>
-          <div class="meta">
-            ${esc(chat.chat_id)}<br />
-            ${chat.participants?.length ? `participants ${esc(chat.participants.join(", "))}<br />` : ""}
-            ${chat.service_type ? `service ${esc(chat.service_type)}<br />` : ""}
-            ${chat.last_message_at ? `last ${esc(fmtDate(chat.last_message_at))}` : "history unavailable or no recent messages"}
+          <div class="meta ${compact ? "chat-compact-meta" : ""}">
+            ${esc(firstNonEmpty(chat.participants?.[0], chat.chat_id))}<br />
+            ${esc(compactLastSeen(chat.last_message_at))}
           </div>
         </div>
       `).join("")
-    : '<div class="empty">No local Messages chats are currently visible.</div>';
+    : `<div class="empty">${esc(emptyText || "No local Messages chats are available.")}</div>`;
 
-  document.querySelectorAll("#imessageChatList .chat").forEach((node) => {
+  container.querySelectorAll(".chat").forEach((node) => {
     node.addEventListener("click", async () => {
       selectedIMessageChatId = node.dataset.chatId;
-      renderIMessageChats(chats);
+      renderIMessageViews();
       await loadIMessageChat(selectedIMessageChatId);
     });
+  });
+
+  container.querySelectorAll("[data-chat-visibility]").forEach((input) => {
+    input.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    input.addEventListener("change", async (event) => {
+      event.stopPropagation();
+      const target = event.currentTarget;
+      target.disabled = true;
+      try {
+        await setIMessageChatVisibility(target.dataset.chatVisibility, target.checked);
+      } catch (error) {
+        setNotice(error.message || "Could not update Messages downstream visibility.", "error");
+      } finally {
+        target.disabled = false;
+      }
+    });
+  });
+}
+
+function renderIMessageViews() {
+  const allChats = getIMessageAllChats();
+  const visibleChats = getIMessageVisibleChats();
+  const visibleChatIds = getIMessageVisibleChatIds();
+  renderIMessageChats("imessageAllChatList", allChats, {
+    emptyText: "No local Messages chats are available yet.",
+    showVisibilityToggle: true,
+    visibleChatIds,
+    compact: true,
+  });
+  renderIMessageChats("imessageVisibleChatList", visibleChats, {
+    emptyText: "No Messages chats are currently passed downstream.",
+    visibleChatIds,
+    compact: true,
   });
 }
 
@@ -721,7 +842,11 @@ async function loadTelegramChat(peerId) {
     title: data.chat ? data.chat.title : null,
     kind: data.chat ? data.chat.kind : null,
     meta: data.chat
-      ? `${data.chat.username ? "@" + esc(data.chat.username) + " · " : ""}peer ${esc(data.chat.peer_id)}`
+      ? [
+          data.chat.username ? `@${esc(data.chat.username)}` : "",
+          `peer ${esc(data.chat.peer_id)}`,
+          data.chat.last_message_at ? `last ${esc(fmtDate(data.chat.last_message_at))}` : "",
+        ].filter(Boolean).join(" · ")
       : null,
   });
 }
@@ -753,11 +878,16 @@ async function loadWhatsAppChat(jid) {
     listId: "whatsappMessageList",
     fallbackHeading: "Messages",
     fallbackKind: "chat",
-      fallbackMeta: "Scan the QR and label chats with Cloud to inspect recent history.",
+    fallbackMeta: "Scan the QR and label chats with Cloud to inspect recent history.",
     title: data.chat ? data.chat.title : null,
     kind: data.chat ? data.chat.kind : null,
     meta: data.chat
-      ? `${esc(data.chat.jid)}${data.chat.labels?.length ? ` · labels ${esc(data.chat.labels.join(", "))}` : ""}`
+      ? [
+          esc(data.chat.jid),
+          data.chat.service_type ? `service ${esc(data.chat.service_type)}` : "",
+          data.chat.labels?.length ? `labels ${esc(data.chat.labels.join(", "))}` : "",
+          data.chat.last_message_at ? `last ${esc(fmtDate(data.chat.last_message_at))}` : "",
+        ].filter(Boolean).join(" · ")
       : null,
   });
 }
@@ -793,9 +923,56 @@ async function loadIMessageChat(chatId) {
     title: data.chat ? data.chat.title : null,
     kind: data.chat ? data.chat.kind : null,
     meta: data.chat
-      ? `${esc(data.chat.chat_id)}${data.chat.participants?.length ? ` · participants ${esc(data.chat.participants.join(", "))}` : ""}`
+      ? [
+          data.chat.service_type ? `service ${esc(data.chat.service_type)}` : "",
+          data.chat.participants?.length ? `participants ${esc(data.chat.participants.join(", "))}` : "",
+          esc(data.chat.chat_id),
+          data.chat.last_message_at ? `last ${esc(fmtDate(data.chat.last_message_at))}` : "",
+        ].filter(Boolean).join(" · ")
       : null,
   });
+}
+
+async function setIMessageChatVisibility(chatId, visible) {
+  await postJson("/api/imessage/visible-chats", {
+    chat_id: chatId,
+    visible,
+  });
+  await loadOverview();
+  setNotice(
+    visible
+      ? "Messages chat is now visible downstream."
+      : "Messages chat was removed from downstream visibility.",
+    "success",
+  );
+}
+
+async function syncIMessageSelectionForActivePane() {
+  const allChats = getIMessageAllChats();
+  const visibleChats = getIMessageVisibleChats();
+  const sourceChats = activeIMessagePane === "visible-chats" ? visibleChats : allChats;
+  const sourceIds = new Set(sourceChats.map((chat) => chat.chat_id));
+  if (selectedIMessageChatId && !sourceIds.has(selectedIMessageChatId)) {
+    selectedIMessageChatId = null;
+  }
+  if (!selectedIMessageChatId && sourceChats.length) {
+    selectedIMessageChatId = sourceChats[0].chat_id;
+  }
+  renderIMessageViews();
+  if (selectedIMessageChatId && activeIMessagePane !== "settings") {
+    await loadIMessageChat(selectedIMessageChatId);
+    return;
+  }
+  if (!selectedIMessageChatId) {
+    el("imessageMessageHeading").textContent = "Messages";
+    el("imessageChatKindPill").textContent = "chat";
+    el("imessageChatScreenMeta").textContent = activeIMessagePane === "visible-chats"
+      ? "Choose a downstream-visible Messages chat to inspect recent local history."
+      : "Pick a Messages chat to inspect recent local history.";
+    el("imessageMessageList").innerHTML = activeIMessagePane === "visible-chats"
+      ? '<div class="empty">No Messages chats are currently passed downstream.</div>'
+      : '<div class="empty">No Messages chat is selected yet.</div>';
+  }
 }
 
 function renderApis(apis) {
@@ -908,7 +1085,8 @@ function renderIMessageAuth(state) {
   };
   syncConnectionChecks({ imessageAuth: imessageAuthState });
 
-  const chats = Array.isArray(imessageAuthState.chats) ? imessageAuthState.chats : [];
+  const allChats = getIMessageAllChats(imessageAuthState);
+  const visibleChats = getIMessageVisibleChats(imessageAuthState);
   const accounts = Array.isArray(imessageAuthState.accounts) ? imessageAuthState.accounts : [];
   el("imessageBadge").textContent = imessageAuthState.connected ? "Connected" : (imessageAuthState.messages_app_accessible ? "Local access" : "Permission needed");
   el("imessageAuthStatus").innerHTML = `
@@ -920,11 +1098,13 @@ function renderIMessageAuth(state) {
       <div>Messages automation</div><div>${imessageAuthState.messages_app_accessible ? "available" : "blocked"}</div>
       <div>History database</div><div>${imessageAuthState.database_accessible ? "available" : "blocked"}</div>
       <div>Accounts</div><div>${esc(accounts.length)}</div>
-      <div>Visible chats</div><div>${esc(chats.length)}</div>
+      <div>All chats</div><div>${esc(allChats.length)}</div>
+      <div>Visible chats</div><div>${esc(visibleChats.length)}</div>
       <div>History path</div><div>${esc(imessageAuthState.db_path || "default")}</div>
     </div>
     ${accounts.length ? `<div class="meta">Messages accounts: ${esc(accounts.map((account) => `${account.description || account.id}${account.service_type ? ` (${account.service_type})` : ""}`).join(", "))}</div>` : ""}
     ${imessageAuthState.automation_hint ? `<div class="meta">${esc(imessageAuthState.automation_hint)}</div>` : ""}
+    <div class="meta">Use <strong>All chats</strong> to choose which local threads should be passed downstream. Only <strong>Visible chats</strong> are exposed through MCP.</div>
     ${!imessageAuthState.database_accessible ? `
       <div class="row">
         <button type="button" class="secondary-button compact-button" id="openIMessageFilesAccessButton">Open Full Disk Access</button>
@@ -981,7 +1161,7 @@ function renderIMessageAuth(state) {
     });
   }
 
-  renderIMessageChats(chats);
+  renderIMessageViews();
   if (!selectedIMessageChatId) {
     el("imessageMessageHeading").textContent = "Messages";
     el("imessageChatKindPill").textContent = "chat";
@@ -1000,6 +1180,7 @@ async function refreshWhatsAppAuth() {
 
 async function refreshIMessageAuth() {
   renderIMessageAuth(await getJson("/api/imessage/auth"));
+  await syncIMessageSelectionForActivePane();
 }
 
 async function saveTelegramCredentials(event) {
@@ -1139,7 +1320,10 @@ document.querySelectorAll(".whatsapp-pane-button").forEach((node) => {
 });
 
 document.querySelectorAll(".imessage-pane-button").forEach((node) => {
-  node.addEventListener("click", () => setActiveIMessagePane(node.dataset.imessagePane));
+  node.addEventListener("click", () => {
+    setActiveIMessagePane(node.dataset.imessagePane);
+    syncIMessageSelectionForActivePane().catch((error) => setNotice(error.message || String(error), "error"));
+  });
 });
 
 el("telegramCredentialForm").addEventListener("submit", (event) => {

@@ -1,6 +1,9 @@
 import unittest
+import tempfile
+from pathlib import Path
+from unittest import mock
 
-from telegram_proxy.imessage_bridge import IMessageBridge, decode_attributed_body
+from telegram_proxy.imessage_bridge import IMessageBridge, IMessageBridgeError, decode_attributed_body
 
 
 class IMessageBridgeTests(unittest.TestCase):
@@ -90,3 +93,66 @@ class IMessageBridgeTests(unittest.TestCase):
             [],
         )
         self.assertEqual(text, "Этот абонент снова в сети. билайн")
+
+    def test_status_distinguishes_all_and_visible_chats(self):
+        self.bridge._visible_chat_ids = {"chat-a"}
+        chats = [
+            {"chat_id": "chat-a", "title": "Alpha"},
+            {"chat_id": "chat-b", "title": "Beta"},
+        ]
+        with mock.patch.object(self.bridge, "_safe_accounts", return_value=([], None)):
+            with mock.patch.object(self.bridge, "_safe_chat_collection", return_value=(chats, None, True, None)):
+                status = self.bridge._get_status_sync(50)
+
+        self.assertEqual([chat["chat_id"] for chat in status["all_chats"]], ["chat-a", "chat-b"])
+        self.assertEqual([chat["chat_id"] for chat in status["visible_chats"]], ["chat-a"])
+        self.assertEqual([chat["chat_id"] for chat in status["chats"]], ["chat-a"])
+        self.assertEqual(status["visible_chat_ids"], ["chat-a"])
+
+    def test_get_chats_filters_to_visible_chats(self):
+        self.bridge._visible_chat_ids = {"chat-a"}
+        chats = [
+            {"chat_id": "chat-a", "title": "Alpha"},
+            {"chat_id": "chat-b", "title": "Beta"},
+        ]
+        with mock.patch.object(self.bridge, "_safe_chat_collection", return_value=(chats, None, True, None)):
+            payload = self.bridge._get_chats_sync(50)
+
+        self.assertEqual([chat["chat_id"] for chat in payload["chats"]], ["chat-a"])
+
+    def test_get_chat_blocks_hidden_downstream_chats(self):
+        self.bridge._visible_chat_ids = {"chat-a"}
+        chats = [
+            {"chat_id": "chat-a", "title": "Alpha"},
+            {"chat_id": "chat-b", "title": "Beta"},
+        ]
+        with mock.patch.object(self.bridge, "_safe_chat_collection", return_value=(chats, None, True, None)):
+            with self.assertRaises(IMessageBridgeError):
+                self.bridge._get_chat_sync("chat-b", 20)
+
+    def test_get_local_chat_allows_hidden_chats(self):
+        chats = [
+            {"chat_id": "chat-a", "title": "Alpha"},
+            {"chat_id": "chat-b", "title": "Beta"},
+        ]
+        with mock.patch.object(self.bridge, "_safe_chat_collection", return_value=(chats, None, True, None)):
+            with mock.patch.object(self.bridge, "_query_chat_messages", return_value=[{"id": "1", "text": "hello"}]):
+                payload = self.bridge._get_chat_sync("chat-b", 20, False)
+
+        self.assertEqual(payload["chat"]["chat_id"], "chat-b")
+        self.assertEqual(payload["messages"][0]["text"], "hello")
+
+    def test_set_chat_visibility_persists_selected_chat_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = IMessageBridge(visible_chats_path=Path(tmp) / "visible_chats.json")
+            chats = [
+                {"chat_id": "chat-a", "title": "Alpha"},
+                {"chat_id": "chat-b", "title": "Beta"},
+            ]
+            with mock.patch.object(bridge, "_safe_chat_collection", return_value=(chats, None, True, None)):
+                payload = bridge._set_chat_visibility_sync("chat-b", True)
+
+            self.assertEqual(payload["visible_chat_ids"], ["chat-b"])
+            self.assertEqual(bridge._visible_chat_ids, {"chat-b"})
+            saved = bridge.visible_chats_path.read_text(encoding="utf-8")
+            self.assertIn('"chat-b"', saved)
