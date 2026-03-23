@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Telethon Proxy Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="panel hero-main">
+        <div class="eyebrow">Cloud Folder Proxy</div>
+        <h1>Telethon service control room</h1>
+        <div class="sub">Local visibility into proxy configuration, active downstream clients, Cloud-scoped chats, and the MTProto surface currently exposed by the service.</div>
+      </div>
+      <div class="panel hero-side">
+        <div>
+          <div class="stat-label">Connected clients</div>
+          <div class="stat-value" id="clientCount">0</div>
+        </div>
+        <div>
+          <div class="stat-label">Accessible chats</div>
+          <div class="stat-value" id="chatCount">0</div>
+        </div>
+        <div>
+          <div class="stat-label">Dashboard</div>
+          <div class="meta"><span id="dashboardAddress"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="notice" class="notice" style="display:none"></div>
+
+    <div class="workspace">
+      <aside class="panel folder-rail">
+        <div class="folder-title">Folders</div>
+        <button class="folder-button active" data-section="configuration">
+          <div class="folder-name">Configuration</div>
+          <div class="folder-meta">Proxy basics, network endpoints, and connected clients.</div>
+        </button>
+        <button class="folder-button" data-section="mcp">
+          <div class="folder-name">MCP</div>
+          <div class="folder-meta">Local MCP endpoint, auth token, tools, resources, and subscriptions.</div>
+        </button>
+        <button class="folder-button" data-section="chats">
+          <div class="folder-name">Chats</div>
+          <div class="folder-meta">Accessible Cloud chats with Telegram-style recent history.</div>
+        </button>
+        <button class="folder-button" data-section="apis">
+          <div class="folder-name">APIs</div>
+          <div class="folder-meta">Forwarded MTProto methods and proxy-local surface.</div>
+        </button>
+      </aside>
+
+      <div class="section-stack">
+      <section class="panel section-panel active" data-section-panel="configuration">
+        <div class="section-head">
+          <h2>Configuration</h2>
+          <span class="badge" id="folderBadge">Cloud</span>
+        </div>
+        <div class="section-body">
+          <div class="kv" id="configGrid"></div>
+          <div class="subsection-title">Upstream Account</div>
+          <div class="kv" id="upstreamGrid"></div>
+          <div class="subsection-title">Downstream Credentials</div>
+          <div class="client-list" id="credentialList"></div>
+          <h3>Connected Clients</h3>
+          <div class="client-list" id="clientList"></div>
+        </div>
+      </section>
+
+      <section class="panel section-panel" data-section-panel="mcp">
+        <div class="section-head">
+          <h2>MCP</h2>
+          <span class="badge">Local tools + subscriptions</span>
+        </div>
+        <div class="section-body">
+          <div class="kv" id="mcpGrid"></div>
+          <div class="credential-card" id="mcpCard"></div>
+        </div>
+      </section>
+
+      <section class="panel section-panel" data-section-panel="chats">
+        <div class="section-head">
+          <h2>Chats</h2>
+          <span class="badge" id="chatBadge">Recent history</span>
+        </div>
+        <div class="section-body">
+          <div class="chat-shell">
+            <div class="chat-sidebar">
+              <div class="chat-list" id="chatList"></div>
+            </div>
+            <div class="chat-stage">
+              <div class="chat-screen-head">
+                <div class="row">
+                  <div class="title" id="messageHeading">Messages</div>
+                  <span class="pill" id="chatKindPill">chat</span>
+                </div>
+                <div class="chat-screen-meta" id="chatScreenMeta">Pick a Cloud chat to inspect recent history.</div>
+              </div>
+              <div class="message-list" id="messageList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel section-panel" data-section-panel="apis">
+        <div class="section-head">
+          <h2>APIs</h2>
+          <span class="badge">Forwarded + local</span>
+        </div>
+        <div class="section-body">
+          <h3>Forwarded upstream</h3>
+          <div class="api-list" id="forwardedApis"></div>
+          <h3>Handled by proxy</h3>
+          <div class="api-list" id="localApis"></div>
+        </div>
+      </section>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

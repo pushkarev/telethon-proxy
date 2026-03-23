@@ -100,6 +100,7 @@ class FakeUpstream:
         self.hidden_channel = _channel(99, title="Secret Chat", username="secretroom", access_hash=9900)
         self.sender = _user(1000, first_name="Alice", access_hash=5000)
         self.update_bus = UpdateBus()
+        self.last_read = None
         self.messages = [
             _message(7, peer=types.PeerChannel(42), sender=types.PeerUser(1000), text="hello from cloud"),
         ]
@@ -117,6 +118,63 @@ class FakeUpstream:
         self._ensure_allowed(peer)
         return SimpleNamespace(
             messages=list(reversed(self.messages[-limit:])),
+            chats=[self.allowed_channel],
+            users=[self.sender],
+            dropped_count=0,
+        )
+
+    async def search_messages(
+        self,
+        peer,
+        *,
+        query: str,
+        filter,
+        min_date=None,
+        max_date=None,
+        offset_id: int = 0,
+        add_offset: int = 0,
+        limit: int = 100,
+        max_id: int = 0,
+        min_id: int = 0,
+        hash_value: int = 0,
+        from_id=None,
+        saved_peer_id=None,
+        saved_reaction=None,
+        top_msg_id=None,
+    ):
+        self._ensure_allowed(peer)
+        matched = [message for message in self.messages if query.lower() in (message.message or "").lower()]
+        return SimpleNamespace(
+            messages=list(reversed(matched[:limit])),
+            chats=[self.allowed_channel],
+            users=[self.sender],
+            dropped_count=0,
+        )
+
+    async def search_all_messages(
+        self,
+        *,
+        query: str,
+        filter,
+        min_date=None,
+        max_date=None,
+        offset_peer=None,
+        offset_id: int = 0,
+        limit: int = 100,
+        max_id: int = 0,
+        min_id: int = 0,
+        from_id=None,
+        saved_peer_id=None,
+        saved_reaction=None,
+        top_msg_id=None,
+        broadcasts_only: bool | None = None,
+        groups_only: bool | None = None,
+        users_only: bool | None = None,
+        folder_id: int | None = None,
+    ):
+        matched = [message for message in self.messages if query.lower() in (message.message or "").lower()]
+        return SimpleNamespace(
+            messages=list(reversed(matched[:limit])),
             chats=[self.allowed_channel],
             users=[self.sender],
             dropped_count=0,
@@ -162,6 +220,7 @@ class FakeUpstream:
 
     async def read_history(self, peer, max_id: int):
         self._ensure_allowed(peer)
+        self.last_read = (utils.get_peer_id(peer), max_id)
         return None
 
     async def delete_messages(self, peer, message_ids, *, revoke=True):
@@ -259,6 +318,69 @@ class MTProtoProxyTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
+        with self.assertRaises(errors.PeerIdInvalidError):
+            await self.client(
+                functions.messages.SearchRequest(
+                    peer=types.InputPeerChannel(99, 9900),
+                    q="secret",
+                    filter=types.InputMessagesFilterEmpty(),
+                    min_date=None,
+                    max_date=None,
+                    offset_id=0,
+                    add_offset=0,
+                    limit=10,
+                    max_id=0,
+                    min_id=0,
+                    hash=0,
+                )
+            )
+
+    async def test_search_request_stays_within_allowed_chat(self):
+        await self._login()
+
+        dialogs = await self.client.get_dialogs()
+        result = await self.client(
+            functions.messages.SearchRequest(
+                peer=dialogs[0].entity,
+                q="cloud",
+                filter=types.InputMessagesFilterEmpty(),
+                min_date=None,
+                max_date=None,
+                offset_id=0,
+                add_offset=0,
+                limit=10,
+                max_id=0,
+                min_id=0,
+                hash=0,
+            )
+        )
+
+        self.assertEqual([message.message for message in result.messages], ["hello from cloud"])
+        self.assertEqual([chat.title for chat in result.chats], ["Cloud Chat"])
+
+    async def test_global_search_is_restricted_to_cloud_dialogs(self):
+        await self._login()
+
+        result = await self.client(
+            functions.messages.SearchGlobalRequest(
+                q="cloud",
+                filter=types.InputMessagesFilterEmpty(),
+                min_date=None,
+                max_date=None,
+                offset_rate=0,
+                offset_peer=types.InputPeerEmpty(),
+                offset_id=0,
+                limit=10,
+                broadcasts_only=None,
+                groups_only=None,
+                users_only=None,
+                folder_id=None,
+            )
+        )
+
+        self.assertEqual([message.message for message in result.messages], ["hello from cloud"])
+        self.assertEqual([chat.title for chat in result.chats], ["Cloud Chat"])
+
     async def test_send_message_through_proxy(self):
         await self._login()
 
@@ -289,6 +411,17 @@ class MTProtoProxyTests(unittest.IsolatedAsyncioTestCase):
 
         history = await self.client.get_messages(dialogs[0].entity, limit=5)
         self.assertNotIn("delete me", [message.message for message in history])
+
+    async def test_channel_read_acknowledge_is_relayed_upstream(self):
+        await self._login()
+
+        dialogs = await self.client.get_dialogs()
+        await self.client.send_read_acknowledge(dialogs[0].entity, max_id=7)
+
+        self.assertEqual(
+            self.server.upstream.last_read,
+            (utils.get_peer_id(types.PeerChannel(42)), 7),
+        )
 
     async def test_live_updates_are_delivered_to_telethon_handlers(self):
         seen = []

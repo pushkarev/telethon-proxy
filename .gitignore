@@ -1,7 +1,9 @@
 .venv-stt/
+.venv-build/
 __pycache__/
 *.pyc
 node_modules/
-package-lock.json
 .openclaw/playwright-output/
 .openclaw/playwright-profile/
+build/
+dist/

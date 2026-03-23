@@ -20,7 +20,11 @@ from telethon.tl.tlobject import TLObject
 from telethon.tl.core import MessageContainer
 from telethon.tl.functions import InitConnectionRequest, InvokeWithLayerRequest, InvokeWithoutUpdatesRequest, PingRequest
 from telethon.tl.functions.auth import SendCodeRequest, SignInRequest
-from telethon.tl.functions.channels import DeleteMessagesRequest as DeleteChannelMessagesRequest, GetParticipantsRequest
+from telethon.tl.functions.channels import (
+    DeleteMessagesRequest as DeleteChannelMessagesRequest,
+    GetParticipantsRequest,
+    ReadHistoryRequest as ChannelReadHistoryRequest,
+)
 from telethon.tl.functions.contacts import ResolveUsernameRequest
 from telethon.tl.functions.help import GetConfigRequest
 from telethon.tl.functions.messages import (
@@ -30,6 +34,8 @@ from telethon.tl.functions.messages import (
     GetHistoryRequest,
     GetPeerDialogsRequest,
     ReadHistoryRequest,
+    SearchGlobalRequest,
+    SearchRequest,
     SendMediaRequest,
     SendMessageRequest,
 )
@@ -42,7 +48,7 @@ from .config import ProxyConfig
 from .downstream_auth import DownstreamAuthService
 from .downstream_registry import DownstreamRegistry, RegisteredClient
 from .session_state import VirtualUpdateState
-from .upstream import UpstreamAdapter
+from .upstream import UpstreamAdapter, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +93,17 @@ class MTProtoConnectionState:
             self.seq_no += 1
             return result
         return self.seq_no * 2
+
+
+@dataclass(slots=True)
+class ActiveClientConnection:
+    connection_id: int
+    key_id: int
+    label: str
+    phone: str | None
+    connected_at: datetime
+    remote_addr: str
+    authorized: bool
 
 
 class TelethonRequestDispatcher:
@@ -136,6 +153,10 @@ class TelethonRequestDispatcher:
             return await self._get_full_chat(request)
         if isinstance(request, GetHistoryRequest):
             return await self._get_history(state, request)
+        if isinstance(request, SearchRequest):
+            return await self._search_messages(state, request)
+        if isinstance(request, SearchGlobalRequest):
+            return await self._search_global(state, request)
         if isinstance(request, SendMessageRequest):
             return await self._send_message(state, request)
         if isinstance(request, SendMediaRequest):
@@ -146,6 +167,8 @@ class TelethonRequestDispatcher:
             return self._save_big_file_part(state, request)
         if isinstance(request, ReadHistoryRequest):
             return await self._read_history(state, request)
+        if isinstance(request, ChannelReadHistoryRequest):
+            return await self._read_channel_history(state, request)
         if isinstance(request, DeleteMessagesRequest):
             return await self._delete_messages(state, request)
         if isinstance(request, DeleteChannelMessagesRequest):
@@ -315,6 +338,68 @@ class TelethonRequestDispatcher:
         except PermissionError as exc:
             raise ProxyRpcError(400, "CHAT_ID_INVALID") from exc
 
+    async def _search_messages(
+        self,
+        state: MTProtoConnectionState,
+        request: SearchRequest,
+    ) -> types.messages.Messages | types.messages.MessagesSlice:
+        try:
+            result = await self.upstream.search_messages(
+                request.peer,
+                query=request.q,
+                filter=request.filter,
+                min_date=request.min_date,
+                max_date=request.max_date,
+                offset_id=request.offset_id,
+                add_offset=request.add_offset,
+                limit=request.limit,
+                max_id=request.max_id,
+                min_id=request.min_id,
+                hash_value=request.hash,
+                from_id=request.from_id,
+                saved_peer_id=request.saved_peer_id,
+                saved_reaction=request.saved_reaction,
+                top_msg_id=request.top_msg_id,
+            )
+        except PermissionError as exc:
+            raise ProxyRpcError(400, "PEER_ID_INVALID") from exc
+        self._remember_messages(state, list(result.messages))
+        return types.messages.MessagesSlice(
+            count=len(result.messages),
+            messages=result.messages,
+            topics=[],
+            chats=result.chats,
+            users=result.users,
+        )
+
+    async def _search_global(
+        self,
+        state: MTProtoConnectionState,
+        request: SearchGlobalRequest,
+    ) -> types.messages.Messages | types.messages.MessagesSlice:
+        result = await self.upstream.search_all_messages(
+            query=request.q,
+            filter=request.filter,
+            min_date=request.min_date,
+            max_date=request.max_date,
+            offset_peer=None if isinstance(request.offset_peer, types.InputPeerEmpty) else request.offset_peer,
+            offset_id=request.offset_id,
+            limit=request.limit,
+            from_id=None,
+            broadcasts_only=request.broadcasts_only,
+            groups_only=request.groups_only,
+            users_only=request.users_only,
+            folder_id=request.folder_id,
+        )
+        self._remember_messages(state, list(result.messages))
+        return types.messages.MessagesSlice(
+            count=len(result.messages),
+            messages=result.messages,
+            topics=[],
+            chats=result.chats,
+            users=result.users,
+        )
+
     async def _send_message(self, state: MTProtoConnectionState, request: SendMessageRequest) -> types.UpdateShortSentMessage:
         try:
             message = await self.upstream.send_message(request.peer, request.message)
@@ -339,6 +424,19 @@ class TelethonRequestDispatcher:
             await self.upstream.read_history(request.peer, request.max_id)
         except PermissionError as exc:
             raise ProxyRpcError(400, "PEER_ID_INVALID") from exc
+
+        new_state = state.update_state.advance_for_message()
+        return types.messages.AffectedMessages(pts=new_state.pts, pts_count=1)
+
+    async def _read_channel_history(
+        self,
+        state: MTProtoConnectionState,
+        request: ChannelReadHistoryRequest,
+    ) -> types.messages.AffectedMessages:
+        try:
+            await self.upstream.read_history(request.channel, request.max_id)
+        except PermissionError as exc:
+            raise ProxyRpcError(400, "CHANNEL_PRIVATE") from exc
 
         new_state = state.update_state.advance_for_message()
         return types.messages.AffectedMessages(pts=new_state.pts, pts_count=1)
@@ -624,6 +722,8 @@ class MTProtoProxyServer:
         self.registry = registry
         self.dispatcher = TelethonRequestDispatcher(upstream, auth, registry, config)
         self._server: asyncio.AbstractServer | None = None
+        self._active_connections: dict[int, ActiveClientConnection] = {}
+        self._next_connection_id = 1
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -653,6 +753,7 @@ class MTProtoProxyServer:
         update_queue: asyncio.Queue | None = None
         push_task: asyncio.Task[None] | None = None
         writer_lock = asyncio.Lock()
+        connection_id: int | None = None
         try:
             while not reader.at_eof():
                 packet = await self._read_packet(reader)
@@ -668,6 +769,7 @@ class MTProtoProxyServer:
 
                 if state is None:
                     state = MTProtoConnectionState(client=client)
+                    connection_id = self._register_connection(client, writer)
                     update_bus = getattr(self.upstream, "update_bus", None)
                     if update_bus is not None:
                         update_queue = update_bus.subscribe()
@@ -677,11 +779,15 @@ class MTProtoProxyServer:
                     break
                 plain = self._decrypt_client_packet(client.auth_key.key, packet)
                 responses = await self._dispatch_packet(state, plain)
+                if connection_id is not None:
+                    self._update_connection_state(connection_id, state)
                 for body, content_related in responses:
                     await self._write_payload(state, writer, writer_lock, body=body, content_related=content_related)
         except (asyncio.IncompleteReadError, ConnectionError, OSError):
             pass
         finally:
+            if connection_id is not None:
+                self._active_connections.pop(connection_id, None)
             if update_queue is not None:
                 update_bus = getattr(self.upstream, "update_bus", None)
                 if update_bus is not None:
@@ -692,6 +798,21 @@ class MTProtoProxyServer:
                     await push_task
             writer.close()
             await writer.wait_closed()
+
+    def active_connections_snapshot(self) -> list[dict[str, object]]:
+        connections = sorted(self._active_connections.values(), key=lambda item: item.connected_at, reverse=True)
+        return [
+            {
+                "connection_id": item.connection_id,
+                "key_id": item.key_id,
+                "label": item.label,
+                "phone": item.phone,
+                "connected_at": item.connected_at.isoformat(),
+                "remote_addr": item.remote_addr,
+                "authorized": item.authorized,
+            }
+            for item in connections
+        ]
 
     async def _dispatch_packet(self, state: MTProtoConnectionState, plain: bytes) -> list[tuple[bytes, bool]]:
         reader = BinaryReader(plain)
@@ -729,6 +850,8 @@ class MTProtoProxyServer:
 
         try:
             result = await self.dispatcher.dispatch(state, obj, req_msg_id=req_msg_id)
+        except UpstreamUnavailableError:
+            return [(self._serialize_rpc_result(req_msg_id, error=RpcError(500, "UPSTREAM_UNAVAILABLE")), True)]
         except ProxyRpcError as exc:
             return [(self._serialize_rpc_result(req_msg_id, error=RpcError(exc.code, exc.message)), True)]
 
@@ -909,3 +1032,27 @@ class MTProtoProxyServer:
         if isinstance(result, TLObject):
             return bytes(result)
         raise TypeError(f"Cannot serialize result type: {type(result)!r}")
+
+    def _register_connection(self, client: RegisteredClient, writer: asyncio.StreamWriter) -> int:
+        connection_id = self._next_connection_id
+        self._next_connection_id += 1
+        peer = writer.get_extra_info("peername")
+        remote_addr = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) and len(peer) >= 2 else "unknown"
+        self._active_connections[connection_id] = ActiveClientConnection(
+            connection_id=connection_id,
+            key_id=client.key_id,
+            label=client.label,
+            phone=client.phone,
+            connected_at=datetime.now(timezone.utc),
+            remote_addr=remote_addr,
+            authorized=client.phone is not None,
+        )
+        return connection_id
+
+    def _update_connection_state(self, connection_id: int, state: MTProtoConnectionState) -> None:
+        connection = self._active_connections.get(connection_id)
+        if connection is None:
+            return
+        connection.label = state.client.label
+        connection.phone = state.client.phone
+        connection.authorized = state.client.phone is not None

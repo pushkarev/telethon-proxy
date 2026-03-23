@@ -1,12 +1,49 @@
 {
-  "name": "openclaw-browser-automation",
+  "name": "telethon-proxy-desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "Practical Playwright starter for local browser tasks in this OpenClaw workspace.",
+  "description": "Desktop shell and background service packaging for the local Telethon proxy.",
   "type": "module",
+  "main": "electron/main.mjs",
+  "productName": "Telethon Proxy",
   "scripts": {
+    "app:dev": "electron .",
+    "app:bundle-python": "sh ./scripts/build-python-service.sh",
+    "app:pack": "npm run app:bundle-python && electron-builder --dir",
+    "app:dist": "npm run app:bundle-python && electron-builder",
     "browser:run": "node scripts/playwright-runner.mjs",
     "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.telethon.proxy",
+    "productName": "Telethon Proxy",
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/background",
+        "to": "background",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "dist/electron"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
   },
   "dependencies": {
     "playwright": "^1.58.2"

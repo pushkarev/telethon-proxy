@@ -109,6 +109,15 @@ source .venv/bin/activate
 python -m unittest discover -s tests -v
 ```
 
+If you ever spot a detached `python -m unittest discover -s tests -v` process still burning CPU after a tool/session interruption, kill that stray test runner and leave the `launchd`-managed proxy service alone:
+
+```bash
+ps -axo pid,ppid,%cpu,%mem,etime,stat,command | rg 'python|proxy_service|unittest'
+kill <stray_unittest_pid>
+```
+
+The expected long-lived process for this project is `proxy_service.py`, typically loaded as the `dev.telethon-proxy` `launchd` agent.
+
 
 ### Control server request examples
 
@@ -207,6 +216,37 @@ await client.start(phone="+15550000000", code_callback=lambda: "00000")
 dialogs = await client.get_dialogs()
 ```
 
+### MCP client example
+
+Once `python proxy_service.py` is running, you can list the chats exposed through the local MCP endpoint with:
+
+```bash
+python list_mcp_chats.py
+```
+
+The script loads `~/.tlt-proxy/.env`, uses the local MCP defaults (`127.0.0.1:8791/mcp`), reads the bearer token from `TP_MCP_TOKEN` or `~/.tlt-proxy/mcp_token`, initializes an MCP session, and calls `telegram.list_chats`.
+
+Useful flags:
+
+```bash
+python list_mcp_chats.py --json
+python list_mcp_chats.py --limit 20
+python list_mcp_chats.py --host 127.0.0.1 --port 8791 --path /mcp
+```
+
+To monitor all Cloud chats through MCP and echo every new incoming message back into the same chat:
+
+```bash
+python echo_mcp_chats.py
+```
+
+Useful flags:
+
+```bash
+python echo_mcp_chats.py --poll-interval 0.5
+python echo_mcp_chats.py --replay-existing
+```
+
 
 ### Downstream auth model
 
@@ -271,6 +311,13 @@ TP_MTPROTO_HOST=0.0.0.0
 TP_DOWNSTREAM_HOST=100.x.y.z
 ```
 
+For laptop-style intermittent connectivity, you can also tune the upstream reconnect backoff:
+
+```env
+TP_UPSTREAM_RECONNECT_MIN_DELAY=2
+TP_UPSTREAM_RECONNECT_MAX_DELAY=30
+```
+
 Install and start the `launchd` service in one step:
 
 ```bash
@@ -297,3 +344,35 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.telethon-proxy.plist
 launchctl enable gui/$(id -u)/dev.telethon-proxy
 launchctl kickstart -k gui/$(id -u)/dev.telethon-proxy
 ```
+
+### Electron desktop shell
+
+The repo now includes an Electron app entrypoint that opens the dashboard UI as a desktop window and treats the Python proxy service as the background component.
+
+From the repo root:
+
+```bash
+npm install
+npm run app:dev
+```
+
+Behavior:
+
+- if the local dashboard is already running on `http://127.0.0.1:8788`, Electron reuses it
+- otherwise Electron starts `telegram-project/proxy_service.py` in the background and waits for the dashboard to come up
+- the web UI itself now lives in `telegram-project/webui/` and is served by the Python dashboard service
+
+To build a distributable macOS app bundle:
+
+```bash
+python3 -m venv .venv-build
+.venv-build/bin/pip install -r telegram-project/requirements.txt pyinstaller
+npm install
+npm run app:dist
+```
+
+Outputs land in `dist/electron/`, including:
+
+- `Telethon Proxy.app` inside `dist/electron/mac-arm64/`
+- `Telethon Proxy-<version>-arm64.dmg`
+- `Telethon Proxy-<version>-arm64-mac.zip`

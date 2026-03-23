@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 from collections import deque
 from typing import Any
 
-from telethon import TelegramClient, events, functions, types
+from telethon import TelegramClient, events, functions, types, utils
 
 from .config import ProxyConfig
-from .filtering import ensure_allowed_peer, filter_messages_bundle
+from .filtering import FilterResult, ensure_allowed_peer, filter_messages_bundle
 from .folders import build_cloud_policy_snapshot
 from .hooks import IncomingHook
 from .peer_refs import PeerResolver
@@ -19,10 +20,14 @@ from .update_bus import UpdateBus, UpdateEnvelope
 logger = logging.getLogger(__name__)
 
 
+class UpstreamUnavailableError(RuntimeError):
+    pass
+
+
 class UpstreamAdapter:
-    def __init__(self, config: ProxyConfig) -> None:
+    def __init__(self, config: ProxyConfig, *, client: TelegramClient | None = None) -> None:
         self.config = config
-        self.client = TelegramClient(
+        self.client = client or TelegramClient(
             str(config.upstream_session_path),
             config.upstream_api_id,
             config.upstream_api_hash,
@@ -32,37 +37,86 @@ class UpstreamAdapter:
         self.peer_resolver = PeerResolver()
         self.incoming_hook = IncomingHook(config.incoming_hook_command)
         self._policy_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
         self._refresh_task: asyncio.Task[None] | None = None
+        self._supervisor_task: asyncio.Task[None] | None = None
         self._recent_update_keys: deque[tuple[str, int | None, int | None]] = deque(maxlen=max(config.update_buffer_size, 100))
         self._recent_update_index: set[tuple[str, int | None, int | None]] = set()
+        self._handlers_registered = False
+        self._stopping = False
 
     async def start(self) -> None:
         if not self.config.upstream_api_id or not self.config.upstream_api_hash:
             raise RuntimeError("Missing upstream Telegram credentials")
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            if not self.config.upstream_phone:
-                raise RuntimeError("Missing upstream phone number for unauthorized Telegram session")
-            await self.client.start(phone=self.config.upstream_phone)
-        await self.refresh_policy()
-        self.client.add_event_handler(self._on_new_message, events.NewMessage)
-        self.client.add_event_handler(self._on_message_edited, events.MessageEdited)
+        self._stopping = False
+        self._register_event_handlers()
+        self._supervisor_task = asyncio.create_task(self._supervise_connection())
+        try:
+            await self.ensure_connected(force_refresh_policy=True)
+        except UpstreamUnavailableError as exc:
+            logger.warning("Initial upstream connection failed; reconnect supervisor will retry: %s", exc)
+        except Exception:
+            if self._supervisor_task is not None:
+                self._supervisor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._supervisor_task
+                self._supervisor_task = None
+            raise
         logger.info("Upstream adapter started")
 
     async def stop(self) -> None:
+        self._stopping = True
         if self._refresh_task:
             self._refresh_task.cancel()
-        await self.client.disconnect()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._refresh_task
+            self._refresh_task = None
+        if self._supervisor_task:
+            self._supervisor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._supervisor_task
+            self._supervisor_task = None
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()
 
     async def refresh_policy(self) -> CloudPolicySnapshot:
+        await self.ensure_connected()
         async with self._policy_lock:
-            self.policy = await build_cloud_policy_snapshot(self.client, self.config.cloud_folder_name)
-            logger.info("Loaded Cloud policy with %s peers", len(self.policy.allowed_peers))
-            return self.policy
+            return await self._refresh_policy_locked()
+
+    async def ensure_connected(self, *, force_refresh_policy: bool = False) -> None:
+        async with self._connect_lock:
+            if self._stopping:
+                raise UpstreamUnavailableError("Upstream adapter is stopping")
+            refresh_needed = force_refresh_policy or not self.policy.allowed_peers
+            if self.client.is_connected():
+                if refresh_needed:
+                    async with self._policy_lock:
+                        await self._refresh_policy_locked()
+                return
+            try:
+                await self.client.connect()
+                if not await self.client.is_user_authorized():
+                    if not self.config.upstream_phone:
+                        raise RuntimeError("Missing upstream phone number for unauthorized Telegram session")
+                    await self.client.start(phone=self.config.upstream_phone)
+                if refresh_needed:
+                    async with self._policy_lock:
+                        await self._refresh_policy_locked()
+            except asyncio.CancelledError:
+                raise
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise UpstreamUnavailableError(str(exc) or exc.__class__.__name__) from exc
 
     async def get_dialogs(self, limit: int = 100):
-        dialogs = await self.client.get_dialogs(limit=limit)
-        return [dialog for dialog in dialogs if self.policy.allows_peer(dialog.entity)]
+        await self.ensure_connected()
+        dialogs = await self.client.get_dialogs(limit=None)
+        allowed = [dialog for dialog in dialogs if self.policy.allows_peer(dialog.entity)]
+        if limit is None:
+            return allowed
+        return allowed[:limit]
 
     async def iter_allowed_dialogs(
         self,
@@ -75,10 +129,12 @@ class UpstreamAdapter:
         folder: int | None = None,
         archived: bool | None = None,
     ):
+        await self.ensure_connected()
         # The upstream Telethon iterator path is brittle around offset_peer handling
-        # in our proxy use case, so we currently fetch a stable slice and filter it.
+        # in our proxy use case, so we fetch a stable snapshot and apply Cloud filtering
+        # before honoring the caller's limit.
         dialogs = await self.client.get_dialogs(
-            limit=limit or 1_000,
+            limit=None,
             ignore_pinned=ignore_pinned,
             folder=folder,
             archived=archived,
@@ -93,12 +149,14 @@ class UpstreamAdapter:
                 break
 
     async def resolve_peer(self, peer: Any) -> Any:
+        await self.ensure_connected()
         normalized = self.peer_resolver.normalize_peer_ref(peer)
         entity = await self.client.get_input_entity(normalized)
         ensure_allowed_peer(self.policy, entity, action="resolvePeer")
         return entity
 
     async def resolve_username(self, username: str):
+        await self.ensure_connected()
         result = await self.client(functions.contacts.ResolveUsernameRequest(username=username))
         ensure_allowed_peer(self.policy, result.peer, action="resolveUsername")
         return result
@@ -154,9 +212,155 @@ class UpstreamAdapter:
             allow_member_listing=self.config.allow_member_listing,
         )
 
-    async def send_message(self, peer: Any, message: str):
+    async def search_messages(
+        self,
+        peer: Any,
+        *,
+        query: str,
+        filter,
+        min_date=None,
+        max_date=None,
+        offset_id: int = 0,
+        add_offset: int = 0,
+        limit: int = 100,
+        max_id: int = 0,
+        min_id: int = 0,
+        hash_value: int = 0,
+        from_id=None,
+        saved_peer_id=None,
+        saved_reaction=None,
+        top_msg_id: int | None = None,
+    ) -> FilterResult:
         target = await self.resolve_peer(peer)
-        sent = await self.client.send_message(target, message)
+        result = await self.client(
+            functions.messages.SearchRequest(
+                peer=target,
+                q=query,
+                filter=filter,
+                min_date=min_date,
+                max_date=max_date,
+                offset_id=offset_id,
+                add_offset=add_offset,
+                limit=limit,
+                max_id=max_id,
+                min_id=min_id,
+                hash=hash_value,
+                from_id=from_id,
+                saved_peer_id=saved_peer_id,
+                saved_reaction=saved_reaction,
+                top_msg_id=top_msg_id,
+            )
+        )
+        return filter_messages_bundle(
+            policy=self.policy,
+            messages=result.messages,
+            chats=result.chats,
+            users=result.users,
+            allow_member_listing=self.config.allow_member_listing,
+        )
+
+    async def search_all_messages(
+        self,
+        *,
+        query: str,
+        filter,
+        min_date=None,
+        max_date=None,
+        offset_peer=None,
+        offset_id: int = 0,
+        limit: int = 100,
+        max_id: int = 0,
+        min_id: int = 0,
+        from_id=None,
+        saved_peer_id=None,
+        saved_reaction=None,
+        top_msg_id: int | None = None,
+        broadcasts_only: bool | None = None,
+        groups_only: bool | None = None,
+        users_only: bool | None = None,
+        folder_id: int | None = None,
+    ) -> FilterResult:
+        await self.ensure_connected()
+        if folder_id not in (None, 0):
+            return FilterResult(messages=[], chats=[], users=[], dropped_count=0)
+
+        dialogs = []
+        async for dialog in self.iter_allowed_dialogs(limit=None, folder=None):
+            if not self._matches_search_scope(
+                dialog.entity,
+                broadcasts_only=broadcasts_only,
+                groups_only=groups_only,
+                users_only=users_only,
+            ):
+                continue
+            dialogs.append(dialog)
+
+        merged_messages: list[object] = []
+        merged_chats: list[object] = []
+        merged_users: list[object] = []
+        seen_message_keys: set[tuple[int, int]] = set()
+
+        for dialog in dialogs:
+            target = getattr(dialog, "input_entity", None) or await self.client.get_input_entity(dialog.entity)
+            result = await self.client(
+                functions.messages.SearchRequest(
+                    peer=target,
+                    q=query,
+                    filter=filter,
+                    min_date=min_date,
+                    max_date=max_date,
+                    offset_id=0,
+                    add_offset=0,
+                    limit=limit,
+                    max_id=max_id,
+                    min_id=min_id,
+                    hash=0,
+                    from_id=from_id,
+                    saved_peer_id=saved_peer_id,
+                    saved_reaction=saved_reaction,
+                    top_msg_id=top_msg_id,
+                )
+            )
+            filtered = filter_messages_bundle(
+                policy=self.policy,
+                messages=result.messages,
+                chats=result.chats,
+                users=result.users,
+                allow_member_listing=self.config.allow_member_listing,
+            )
+            for message in filtered.messages:
+                peer_id = getattr(message, "peer_id", None)
+                message_id = getattr(message, "id", None)
+                if peer_id is None or message_id is None:
+                    continue
+                key = (utils.get_peer_id(peer_id), message_id)
+                if key in seen_message_keys:
+                    continue
+                seen_message_keys.add(key)
+                merged_messages.append(message)
+            merged_chats.extend(filtered.chats)
+            merged_users.extend(filtered.users)
+
+        merged_messages.sort(
+            key=lambda message: (
+                getattr(message, "date", None).timestamp() if getattr(message, "date", None) else 0.0,
+                getattr(message, "id", 0),
+            ),
+            reverse=True,
+        )
+        merged_messages = self._apply_search_offset(merged_messages, offset_peer=offset_peer, offset_id=offset_id)
+        visible_messages = merged_messages[:limit]
+        return filter_messages_bundle(
+            policy=self.policy,
+            messages=visible_messages,
+            chats=merged_chats,
+            users=merged_users,
+            allow_member_listing=self.config.allow_member_listing,
+        )
+
+    async def send_message(self, peer: Any, message: str, *, reply_to: int | None = None):
+        target = await self.resolve_peer(peer)
+        sent = await self.client.send_message(target, message, reply_to=reply_to)
         await self._publish_if_allowed(sent, kind="new_message")
         return sent
 
@@ -216,10 +420,22 @@ class UpstreamAdapter:
         return participants
 
     async def get_full_chat(self, chat_id: int):
+        await self.ensure_connected()
         peer = types.PeerChat(chat_id=chat_id)
         entity = await self.client.get_entity(peer)
         ensure_allowed_peer(self.policy, entity, action="getFullChat")
         return await self.client(functions.messages.GetFullChatRequest(chat_id=chat_id))
+
+    async def get_identity(self) -> dict[str, object]:
+        await self.ensure_connected()
+        me = await self.client.get_me()
+        full_name = " ".join(part for part in [getattr(me, "first_name", None), getattr(me, "last_name", None)] if part).strip()
+        return {
+            "id": getattr(me, "id", None),
+            "name": full_name or getattr(me, "username", None) or "Unknown",
+            "phone": getattr(me, "phone", None),
+            "username": getattr(me, "username", None),
+        }
 
     async def _on_new_message(self, event) -> None:
         await self._publish_if_allowed(event.message, kind="new_message")
@@ -264,3 +480,85 @@ class UpstreamAdapter:
                     "text": getattr(message, "message", None),
                 }
             )
+
+    def _register_event_handlers(self) -> None:
+        if self._handlers_registered:
+            return
+        self.client.add_event_handler(self._on_new_message, events.NewMessage)
+        self.client.add_event_handler(self._on_message_edited, events.MessageEdited)
+        self._handlers_registered = True
+
+    async def _refresh_policy_locked(self) -> CloudPolicySnapshot:
+        self.policy = await build_cloud_policy_snapshot(self.client, self.config.cloud_folder_name)
+        logger.info("Loaded Cloud policy with %s peers", len(self.policy.allowed_peers))
+        return self.policy
+
+    def _matches_search_scope(
+        self,
+        entity: object,
+        *,
+        broadcasts_only: bool | None,
+        groups_only: bool | None,
+        users_only: bool | None,
+    ) -> bool:
+        if users_only:
+            return isinstance(entity, types.User)
+        if groups_only:
+            return isinstance(entity, types.Chat) or (
+                isinstance(entity, types.Channel) and bool(getattr(entity, "megagroup", False))
+            )
+        if broadcasts_only:
+            return isinstance(entity, types.Channel) and not bool(getattr(entity, "megagroup", False))
+        return True
+
+    def _apply_search_offset(
+        self,
+        messages: list[object],
+        *,
+        offset_peer,
+        offset_id: int,
+    ) -> list[object]:
+        if offset_id <= 0:
+            return messages
+        target_peer_id = None
+        if offset_peer is not None:
+            target_peer_id = utils.get_peer_id(offset_peer)
+        for index, message in enumerate(messages):
+            message_peer = getattr(message, "peer_id", None)
+            message_peer_id = utils.get_peer_id(message_peer) if message_peer is not None else None
+            if getattr(message, "id", None) != offset_id:
+                continue
+            if target_peer_id is not None and message_peer_id != target_peer_id:
+                continue
+            return messages[index + 1 :]
+        return messages
+
+    async def _supervise_connection(self) -> None:
+        delay = max(self.config.upstream_reconnect_min_delay, 0.1)
+        max_delay = max(delay, self.config.upstream_reconnect_max_delay)
+        refresh_on_connect = True
+        while not self._stopping:
+            try:
+                await self.ensure_connected(force_refresh_policy=refresh_on_connect or not self.policy.allowed_peers)
+                refresh_on_connect = False
+                delay = max(self.config.upstream_reconnect_min_delay, 0.1)
+                await self.client.disconnected
+                if self._stopping:
+                    return
+                logger.warning("Upstream Telegram connection dropped; reconnecting")
+                refresh_on_connect = True
+            except asyncio.CancelledError:
+                raise
+            except RuntimeError as exc:
+                logger.error("Upstream configuration prevents reconnect: %s", exc)
+                refresh_on_connect = True
+            except UpstreamUnavailableError as exc:
+                logger.warning("Upstream Telegram unavailable; retrying in %.1fs: %s", delay, exc)
+                refresh_on_connect = True
+            except Exception as exc:
+                logger.warning("Upstream Telegram reconnect loop failed; retrying in %.1fs: %s", delay, exc)
+                refresh_on_connect = True
+            if self._stopping:
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)

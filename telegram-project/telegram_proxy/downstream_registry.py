@@ -23,6 +23,9 @@ class RegisteredClient:
     auth_key: AuthKey
     label: str
     created_at: datetime
+    host: str | None = None
+    port: int | None = None
+    session_string: str | None = None
     phone: str | None = None
     authenticated_at: datetime | None = None
 
@@ -47,18 +50,20 @@ class DownstreamRegistry:
             auth_key=auth_key,
             label=label,
             created_at=created_at,
+            host=host,
+            port=port,
         )
+        session = StringSession()
+        session.set_dc(dc_id, host, port)
+        session.auth_key = auth_key
+        client.session_string = session.save()
         with self._lock:
             payload = self._load_unlocked()
             payload["clients"][str(client.key_id)] = self._serialize_client(client)
             self._save_unlocked(payload)
-
-        session = StringSession()
-        session.set_dc(dc_id, host, port)
-        session.auth_key = auth_key
         return IssuedDownstreamSession(
             key_id=client.key_id,
-            session_string=session.save(),
+            session_string=client.session_string,
             label=label,
         )
 
@@ -82,6 +87,16 @@ class DownstreamRegistry:
             self._save_unlocked(payload)
         return self._deserialize_client(key_id, raw)
 
+    def list_clients(self) -> list[RegisteredClient]:
+        with self._lock:
+            payload = self._load_unlocked()
+        clients = [
+            self._deserialize_client(int(key_id), raw)
+            for key_id, raw in payload["clients"].items()
+        ]
+        clients.sort(key=lambda client: client.created_at, reverse=True)
+        return clients
+
     def default_label(self) -> str:
         return "proxy-client"
 
@@ -103,6 +118,9 @@ class DownstreamRegistry:
             "auth_key": base64.b64encode(client.auth_key.key).decode("ascii"),
             "label": client.label,
             "created_at": client.created_at.isoformat(),
+            "host": client.host,
+            "port": client.port,
+            "session_string": client.session_string,
             "phone": client.phone,
             "authenticated_at": client.authenticated_at.isoformat() if client.authenticated_at else None,
         }
@@ -113,6 +131,9 @@ class DownstreamRegistry:
             auth_key=AuthKey(base64.b64decode(raw["auth_key"])),
             label=raw.get("label") or self.default_label(),
             created_at=datetime.fromisoformat(raw["created_at"]),
+            host=raw.get("host"),
+            port=int(raw["port"]) if raw.get("port") is not None else None,
+            session_string=raw.get("session_string"),
             phone=raw.get("phone"),
             authenticated_at=datetime.fromisoformat(raw["authenticated_at"]) if raw.get("authenticated_at") else None,
         )
