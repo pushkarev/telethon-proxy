@@ -285,12 +285,10 @@ function renderOverview(data) {
   el("configGrid").innerHTML = [
     ["Telegram Cloud folder", data.config.cloud_folder_name],
     ["WhatsApp Cloud label", data.config.whatsapp_cloud_label_name || "Cloud"],
-    ["MTProto endpoint", `${data.config.downstream_host}:${data.config.mtproto_port}`],
     ["Background API", `${data.config.dashboard_host}:${data.config.dashboard_port}`],
-    ["Issued sessions", data.config.issued_client_count],
+    ["MCP endpoint", `${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
     ["Reconnect backoff", `${data.config.upstream_reconnect_min_delay}s -> ${data.config.upstream_reconnect_max_delay}s`],
     ["Allow member listing", data.config.allow_member_listing ? "yes" : "no"],
-    ["Proxy session label", data.config.downstream_session_label],
   ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
 
   el("upstreamGrid").innerHTML = [
@@ -298,29 +296,7 @@ function renderOverview(data) {
     ["Phone", data.upstream.phone || "unknown"],
     ["Username", data.upstream.username ? "@" + data.upstream.username : "none"],
   ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
-
-  el("credentialList").innerHTML = data.downstream_credentials.length
-    ? data.downstream_credentials.map((cred) => `
-        <div class="credential-card">
-          <div class="row">
-            <div class="title">${esc(cred.label)}</div>
-            <span class="pill">${cred.phone ? "authorized" : "issued"}</span>
-          </div>
-          <div class="kv">
-            <div>Host</div><div>${esc(cred.host || data.config.downstream_host)}</div>
-            <div>Port</div><div>${esc(cred.port || data.config.mtproto_port)}</div>
-            <div>API ID</div><div>${esc(data.config.downstream_api_id)}</div>
-            <div>API Hash</div><div>${esc(data.config.downstream_api_hash)}</div>
-            <div>Proxy phone</div><div>${esc(data.config.downstream_login_phone)}</div>
-            <div>Proxy code</div><div>${esc(data.config.downstream_login_code)}</div>
-          </div>
-          <div class="meta">Created ${esc(fmtDate(cred.created_at))}${cred.phone ? `<br />Bound phone ${esc(cred.phone)}` : ""}</div>
-          ${cred.session_string
-            ? `<textarea class="credential-session" readonly>${esc(cred.session_string)}</textarea>`
-            : `<div class="empty">Session string was not retained for this issued client.</div>`}
-        </div>
-      `).join("")
-    : '<div class="empty">No downstream client credentials have been issued yet.</div>';
+  renderMtprotoControls(data);
 
   el("mcpGrid").innerHTML = [
     ["Endpoint", `http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
@@ -374,6 +350,79 @@ function renderOverview(data) {
   } else if (!telegramAuth.last_error && !whatsappAuth.last_error) {
     setNotice("");
   }
+}
+
+function renderMtprotoControls(data) {
+  const enabled = Boolean(data.config.mtproto_enabled);
+  const listening = Boolean(data.config.mtproto_listening);
+  const issuedSessions = Array.isArray(data.downstream_credentials) ? data.downstream_credentials : [];
+  const activeClients = Array.isArray(data.clients) ? data.clients : [];
+
+  el("mtprotoStatusCard").innerHTML = `
+    <div class="row">
+      <div class="title">MTProto status</div>
+      <span class="pill">${enabled ? (listening ? "enabled" : "starting") : "disabled"}</span>
+    </div>
+    <div class="kv">
+      <div>Endpoint</div><div>${esc(`${data.config.downstream_host}:${data.config.mtproto_port}`)}</div>
+      <div>Listener</div><div>${listening ? "listening" : "offline"}</div>
+      <div>Issued sessions</div><div>${esc(issuedSessions.length)}</div>
+      <div>Live clients</div><div>${esc(activeClients.length)}</div>
+      <div>Proxy session label</div><div>${esc(data.config.downstream_session_label)}</div>
+      <div>Member listing</div><div>${data.config.allow_member_listing ? "allowed" : "disabled"}</div>
+    </div>
+    ${activeClients.length
+      ? `<div class="meta">Connected: ${esc(activeClients.map((client) => client.label).join(", "))}</div>`
+      : `<div class="meta">No downstream MTProto clients are currently connected.</div>`}
+  `;
+
+  el("mtprotoTogglePill").textContent = enabled ? (listening ? "Enabled" : "Starting") : "Disabled";
+  el("mtprotoToggleMeta").textContent = enabled
+    ? "Downstream Telegram clients can connect through the local MTProto listener."
+    : "The MTProto listener is off. Enable it to reveal the downstream client credentials.";
+
+  const checkbox = el("mtprotoEnabledCheckbox");
+  checkbox.checked = enabled;
+
+  el("mtprotoCredentialsCard").innerHTML = enabled
+    ? `
+        <div class="row">
+          <div class="title">Downstream client credentials</div>
+          <span class="pill">Needed by clients</span>
+        </div>
+        <div class="kv">
+          <div>Host</div><div>${esc(data.config.downstream_host)}</div>
+          <div>Port</div><div>${esc(data.config.mtproto_port)}</div>
+          <div>API ID</div><div>${esc(data.config.downstream_api_id)}</div>
+          <div>API Hash</div><div>${esc(data.config.downstream_api_hash)}</div>
+          <div>Proxy phone</div><div>${esc(data.config.downstream_login_phone)}</div>
+          <div>Proxy code</div><div>${esc(data.config.downstream_login_code)}</div>
+        </div>
+        <div class="meta">Use these values in downstream Telethon-compatible clients, along with one of the issued session strings below.</div>
+        <div class="client-list">
+          ${issuedSessions.length
+            ? issuedSessions.map((cred) => `
+                <div class="credential-card">
+                  <div class="row">
+                    <div class="title">${esc(cred.label)}</div>
+                    <span class="pill">${cred.phone ? "authorized" : "issued"}</span>
+                  </div>
+                  <div class="meta">Created ${esc(fmtDate(cred.created_at))}${cred.phone ? `<br />Bound phone ${esc(cred.phone)}` : ""}</div>
+                  ${cred.session_string
+                    ? `<textarea class="credential-session" readonly>${esc(cred.session_string)}</textarea>`
+                    : `<div class="empty">Session string was not retained for this issued client.</div>`}
+                </div>
+              `).join("")
+            : '<div class="empty">No downstream client credentials have been issued yet.</div>'}
+        </div>
+      `
+    : `
+        <div class="row">
+          <div class="title">Downstream client credentials</div>
+          <span class="pill">Hidden while disabled</span>
+        </div>
+        <div class="empty">Enable MTProto to reveal the endpoint details and issued session strings for downstream Telegram clients.</div>
+      `;
 }
 
 function renderChats(chats) {
@@ -757,6 +806,12 @@ async function clearWhatsAppSession() {
   await loadOverview();
 }
 
+async function setMtprotoEnabled(enabled) {
+  const result = await postJson("/api/mtproto/enabled", { enabled });
+  setNotice(result.message || "MTProto proxy updated.", "success");
+  await loadOverview();
+}
+
 document.querySelectorAll(".folder-button").forEach((node) => {
   node.addEventListener("click", () => setActiveSection(node.dataset.section));
 });
@@ -795,6 +850,19 @@ el("whatsappPairingForm").addEventListener("submit", (event) => {
 
 el("whatsappLogoutButton").addEventListener("click", () => {
   clearWhatsAppSession().catch((error) => setNotice(error.message || String(error), "error"));
+});
+
+el("mtprotoEnabledCheckbox").addEventListener("change", async (event) => {
+  const checkbox = event.currentTarget;
+  checkbox.disabled = true;
+  try {
+    await setMtprotoEnabled(checkbox.checked);
+  } catch (error) {
+    setNotice(error.message || String(error), "error");
+    await loadOverview().catch(() => {});
+  } finally {
+    checkbox.disabled = false;
+  }
 });
 
 loadOverview().catch((error) => {

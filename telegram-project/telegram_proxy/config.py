@@ -12,6 +12,7 @@ from .secrets_store import MacOSSecretStore
 class ProxyConfig:
     control_host: str = "127.0.0.1"
     control_port: int = 9000
+    mtproto_enabled: bool = True
     mtproto_host: str = "127.0.0.1"
     mtproto_port: int = 9001
     dashboard_host: str = "127.0.0.1"
@@ -89,6 +90,8 @@ class ProxyConfig:
     def from_env(cls) -> "ProxyConfig":
         secret_store = MacOSSecretStore()
         saved = secret_store.load_upstream_secrets() if secret_store.is_available else None
+        upstream_api_id = saved.api_id if saved and saved.api_id else os.getenv("TG_API_ID", "0")
+        upstream_api_hash = saved.api_hash if saved and saved.api_hash else os.getenv("TG_API_HASH", "")
         mcp_token, mcp_token_env_managed = secret_store.load_or_create_mcp_token(
             env_token=os.getenv("TP_MCP_TOKEN", ""),
             legacy_path=DEFAULT_CONFIG_HOME / "mcp_token",
@@ -96,6 +99,7 @@ class ProxyConfig:
         return cls(
             control_host=os.getenv("TP_CONTROL_HOST", os.getenv("TP_LISTEN_HOST", "127.0.0.1")),
             control_port=int(os.getenv("TP_CONTROL_PORT", os.getenv("TP_LISTEN_PORT", "9000"))),
+            mtproto_enabled=os.getenv("TP_MTPROTO_ENABLED", "1") not in {"0", "false", "False"},
             mtproto_host=os.getenv("TP_MTPROTO_HOST", "127.0.0.1"),
             mtproto_port=int(os.getenv("TP_MTPROTO_PORT", "9001")),
             dashboard_host=os.getenv("TP_DASHBOARD_HOST", "127.0.0.1"),
@@ -111,8 +115,8 @@ class ProxyConfig:
             downstream_login_code=os.getenv("TP_DOWNSTREAM_LOGIN_CODE", "00000"),
             downstream_password=os.getenv("TP_DOWNSTREAM_PASSWORD", ""),
             downstream_session_label=os.getenv("TP_DOWNSTREAM_SESSION_LABEL", "proxy"),
-            upstream_api_id=int(os.getenv("TG_API_ID", saved.api_id if saved and saved.api_id else "0")),
-            upstream_api_hash=os.getenv("TG_API_HASH", saved.api_hash if saved else ""),
+            upstream_api_id=int(upstream_api_id),
+            upstream_api_hash=upstream_api_hash,
             upstream_phone=os.getenv("TG_PHONE", saved.phone if saved else ""),
             upstream_session_string=os.getenv("TP_UPSTREAM_SESSION_STRING", saved.session if saved else ""),
             upstream_session_name=os.getenv("TP_UPSTREAM_SESSION", str(DEFAULT_CONFIG_HOME / "sessions/proxy_upstream")),

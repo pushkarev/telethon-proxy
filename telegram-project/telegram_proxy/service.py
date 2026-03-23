@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from .config import ProxyConfig
 from .dashboard_service import ProxyDashboardServer
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 class ProxyService:
     def __init__(self, config: ProxyConfig) -> None:
         self.config = config
+        self._stop_event = asyncio.Event()
         self.secret_store = MacOSSecretStore()
         self.upstream = UpstreamAdapter(config)
         self.whatsapp = WhatsAppBridge(
@@ -44,16 +46,19 @@ class ProxyService:
         )
 
     async def start(self) -> None:
+        self._stop_event.clear()
         await self.upstream.start()
         try:
             await self.whatsapp.start()
         except WhatsAppBridgeError as exc:
             logger.warning("WhatsApp bridge failed to start; continuing without an active bridge: %s", exc)
-        await self.mtproto.start()
+        if self.config.mtproto_enabled:
+            await self.mtproto.start()
         await self.mcp.start()
         await self.dashboard.start()
 
     async def stop(self) -> None:
+        self._stop_event.set()
         await self.dashboard.stop()
         await self.mcp.stop()
         await self.mtproto.stop()
@@ -62,4 +67,4 @@ class ProxyService:
         await self.upstream.stop()
 
     async def serve_forever(self) -> None:
-        await self.mtproto.serve_forever()
+        await self._stop_event.wait()

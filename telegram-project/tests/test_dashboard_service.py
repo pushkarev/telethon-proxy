@@ -71,6 +71,9 @@ class _FakeUpstream:
 
 
 class _FakeMTProto:
+    def __init__(self) -> None:
+        self.is_running = True
+
     def active_connections_snapshot(self):
         return [
             {
@@ -83,6 +86,12 @@ class _FakeMTProto:
                 "authorized": True,
             }
         ]
+
+    async def start(self):
+        self.is_running = True
+
+    async def stop(self):
+        self.is_running = False
 
 
 class _FakeTelegramAuth:
@@ -263,6 +272,8 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertEqual(payload["config"]["cloud_folder_name"], "Cloud")
+        self.assertTrue(payload["config"]["mtproto_enabled"])
+        self.assertTrue(payload["config"]["mtproto_listening"])
         self.assertEqual(payload["clients"][0]["label"], "openclaw")
         self.assertEqual(payload["chats"][0]["title"], "Cloud Chat")
         self.assertEqual(payload["upstream"]["phone"], "79936003330")
@@ -298,6 +309,27 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(payload["token"], "test-mcp-token")
         self.assertEqual(self.config.mcp_token, payload["token"])
         self.assertEqual(self.secret_store.mcp_token, payload["token"])
+
+    async def test_mtproto_enable_toggle_route(self):
+        status, body = await self._post("/api/mtproto/enabled", {"enabled": False})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["listening"])
+        self.assertFalse(self.config.mtproto_enabled)
+
+        status, body = await self._get("/api/overview")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["config"]["mtproto_enabled"])
+        self.assertFalse(payload["config"]["mtproto_listening"])
+
+        status, body = await self._post("/api/mtproto/enabled", {"enabled": True})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["enabled"])
+        self.assertTrue(payload["listening"])
+        self.assertTrue(self.config.mtproto_enabled)
 
     async def test_telegram_auth_routes(self):
         status, body = await self._post(

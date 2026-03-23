@@ -726,6 +726,8 @@ class MTProtoProxyServer:
         self._next_connection_id = 1
 
     async def start(self) -> None:
+        if self._server is not None:
+            return
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self.config.mtproto_host,
@@ -737,16 +739,22 @@ class MTProtoProxyServer:
         logger.info("MTProto proxy listening on %s", sockets)
 
     async def stop(self) -> None:
-        if self._server is None:
+        server = self._server
+        if server is None:
             return
-        self._server.close()
-        await self._server.wait_closed()
+        self._server = None
+        server.close()
+        await server.wait_closed()
 
     async def serve_forever(self) -> None:
         if self._server is None:
             raise RuntimeError("MTProto server not started")
         async with self._server:
             await self._server.serve_forever()
+
+    @property
+    def is_running(self) -> bool:
+        return self._server is not None and self._server.is_serving()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         state: MTProtoConnectionState | None = None

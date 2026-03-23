@@ -131,6 +131,9 @@ class ProxyDashboardServer:
             if method == "POST" and url.path.startswith("/api/whatsapp/auth/"):
                 await self._handle_whatsapp_auth_post(writer, url.path, body)
                 return
+            if method == "POST" and url.path == "/api/mtproto/enabled":
+                await self._handle_mtproto_enabled_post(writer, body)
+                return
             if method == "POST" and url.path == "/api/mcp/token/rotate":
                 await self._handle_mcp_token_rotate(writer)
                 return
@@ -160,6 +163,8 @@ class ProxyDashboardServer:
             "config": {
                 "cloud_folder_name": self.config.cloud_folder_name,
                 "whatsapp_cloud_label_name": self.config.whatsapp_cloud_label_name,
+                "mtproto_enabled": self.config.mtproto_enabled,
+                "mtproto_listening": self.mtproto.is_running,
                 "mtproto_port": self.config.mtproto_port,
                 "downstream_host": self.config.downstream_host,
                 "downstream_api_id": self.config.downstream_api_id,
@@ -333,6 +338,48 @@ class ProxyDashboardServer:
             return
 
         await self._write_json(writer, 200, result)
+
+    async def _handle_mtproto_enabled_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        enabled = bool(payload.get("enabled"))
+        if enabled == self.config.mtproto_enabled and self.mtproto.is_running == enabled:
+            await self._write_json(
+                writer,
+                200,
+                {
+                    "ok": True,
+                    "enabled": enabled,
+                    "listening": self.mtproto.is_running,
+                    "message": "MTProto proxy already matches the requested state.",
+                },
+            )
+            return
+
+        try:
+            if enabled:
+                await self.mtproto.start()
+            else:
+                await self.mtproto.stop()
+        except Exception as exc:
+            await self._write_json(writer, 500, {"error": str(exc) or exc.__class__.__name__})
+            return
+
+        self.config.mtproto_enabled = enabled
+        await self._write_json(
+            writer,
+            200,
+            {
+                "ok": True,
+                "enabled": enabled,
+                "listening": self.mtproto.is_running,
+                "message": "MTProto proxy enabled." if enabled else "MTProto proxy disabled.",
+            },
+        )
 
     async def _handle_whatsapp_auth_post(
         self,

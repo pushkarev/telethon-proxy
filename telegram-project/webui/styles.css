@@ -551,6 +551,10 @@ h1 {
   align-items: start;
 }
 
+.mtproto-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .auth-guide {
   grid-column: 1 / -1;
   background:
@@ -604,6 +608,75 @@ h1 {
   gap: 7px;
   font-size: 14px;
   color: var(--muted);
+}
+
+.toggle-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 32, 43, 0.08);
+  background: rgba(247, 243, 235, 0.72);
+  cursor: pointer;
+}
+
+.toggle-row input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-box {
+  position: relative;
+  display: block;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border-radius: 5px;
+  border: 1px solid rgba(24, 32, 43, 0.18);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.toggle-box::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border-right: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  transform: rotate(45deg);
+  transition: border-color 120ms ease;
+}
+
+.toggle-row input:checked + .toggle-box {
+  background: linear-gradient(180deg, rgba(41, 95, 73, 0.95), rgba(31, 75, 57, 0.98));
+  border-color: rgba(31, 75, 57, 0.98);
+  box-shadow: 0 6px 14px rgba(31, 75, 57, 0.18);
+}
+
+.toggle-row input:checked + .toggle-box::after {
+  border-color: #fff;
+}
+
+.toggle-row input:focus-visible + .toggle-box {
+  outline: 2px solid rgba(54, 101, 166, 0.22);
+  outline-offset: 2px;
+}
+
+.mtproto-credentials-card {
+  grid-column: 1 / -1;
 }
 
 .field input {

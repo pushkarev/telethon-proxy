@@ -116,10 +116,12 @@ class MacOSSecretStore:
     def load_or_create_mcp_token(self, *, env_token: str = "", legacy_path: Path | None = None) -> tuple[str, bool]:
         env_token = env_token.strip()
         if env_token:
+            self._delete_legacy_file(legacy_path)
             return env_token, True
 
         token = self.load_mcp_token()
         if token:
+            self._delete_legacy_file(legacy_path)
             return token, False
 
         token = self._migrate_mcp_token_from_file(legacy_path)
@@ -154,3 +156,12 @@ class MacOSSecretStore:
         if self.is_available:
             self.save_mcp_token(token)
         return token
+
+    def _delete_legacy_file(self, legacy_path: Path | None) -> None:
+        if legacy_path is None:
+            return
+        path = legacy_path.expanduser()
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass

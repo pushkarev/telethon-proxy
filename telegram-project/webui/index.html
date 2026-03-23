@@ -42,7 +42,7 @@
         <div class="folder-title">Folders</div>
         <button class="folder-button active" data-section="configuration">
           <div class="folder-name">Configuration</div>
-          <div class="folder-meta">Proxy basics, network endpoints, and issued access.</div>
+          <div class="folder-meta">Proxy basics, dashboard endpoints, and the current upstream account.</div>
         </button>
         <button class="folder-button" data-section="telegram">
           <div class="folder-label-row">
@@ -69,7 +69,7 @@
           <div class="section-head">
             <div>
               <h2>Configuration</h2>
-              <div class="section-copy">Operational details for the local proxy, issued sessions, and the current upstream account.</div>
+              <div class="section-copy">Operational details for the local proxy, scope rules, and the current upstream account.</div>
             </div>
             <span class="badge" id="folderBadge">Cloud</span>
           </div>
@@ -90,16 +90,6 @@
                 <div class="kv" id="upstreamGrid"></div>
               </div>
             </div>
-
-            <div class="content-block">
-              <div class="content-block-head">
-                <div>
-                  <div class="section-kicker">Issued Access</div>
-                  <h3>Downstream credentials</h3>
-                </div>
-              </div>
-              <div class="client-list" id="credentialList"></div>
-            </div>
           </div>
         </section>
 
@@ -116,6 +106,7 @@
               <div class="telegram-nav">
                 <button class="telegram-pane-button active" data-telegram-pane="chats">Chats</button>
                 <button class="telegram-pane-button" data-telegram-pane="apis">APIs</button>
+                <button class="telegram-pane-button" data-telegram-pane="mtproto">MTProto</button>
                 <button class="telegram-pane-button" data-telegram-pane="settings">Settings</button>
               </div>
 
@@ -166,6 +157,39 @@
                     </div>
                     <div class="api-list" id="localApis"></div>
                   </div>
+                </div>
+              </section>
+
+              <section class="telegram-pane" data-telegram-pane-panel="mtproto">
+                <div class="settings-grid mtproto-settings-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">MTProto downstream access</div>
+                      <span class="pill">Telethon-compatible</span>
+                    </div>
+                    <div class="meta">
+                      Turn the MTProto proxy on when you want downstream Telegram clients to connect through this desktop app. When enabled, the client connection details and issued session strings appear below.
+                    </div>
+                  </div>
+
+                  <div class="credential-card" id="mtprotoStatusCard"></div>
+
+                  <div class="credential-card">
+                    <div class="row">
+                      <div class="title">Listener control</div>
+                      <span class="pill" id="mtprotoTogglePill">Enabled</span>
+                    </div>
+                    <label class="toggle-row" for="mtprotoEnabledCheckbox">
+                      <input id="mtprotoEnabledCheckbox" type="checkbox" />
+                      <span class="toggle-box" aria-hidden="true"></span>
+                      <div>
+                        <div class="title-small">Enable MTProto proxy</div>
+                        <div class="meta" id="mtprotoToggleMeta">Downstream clients can connect through the local proxy.</div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div class="credential-card mtproto-credentials-card" id="mtprotoCredentialsCard"></div>
                 </div>
               </section>
 
