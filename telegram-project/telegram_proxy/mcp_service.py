@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import secrets
+import ssl
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -64,13 +65,18 @@ class McpServer:
         self._update_queue: asyncio.Queue[UpdateEnvelope] | None = None
         self._update_task: asyncio.Task[None] | None = None
 
+    def _imessage_enabled(self) -> bool:
+        return self.imessage is not None and self.config.imessage_enabled
+
     async def start(self) -> None:
         if self._server is not None:
             return
+        ssl_context = self._ssl_context()
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self.config.mcp_host,
             port=self.config.mcp_port,
+            ssl=ssl_context,
         )
         if self._server.sockets:
             self.config.mcp_port = self._server.sockets[0].getsockname()[1]
@@ -101,6 +107,18 @@ class McpServer:
     @property
     def is_running(self) -> bool:
         return self._server is not None and self._server.is_serving()
+
+    def _ssl_context(self) -> ssl.SSLContext | None:
+        self.config.validate_mcp_tls_config()
+        if self.config.mcp_scheme != "https":
+            return None
+        cert_path = self.config.mcp_tls_cert_path
+        key_path = self.config.mcp_tls_key_path
+        assert cert_path is not None
+        assert key_path is not None
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert_path), str(key_path))
+        return context
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         keep_open = False
@@ -416,7 +434,7 @@ class McpServer:
                         "description": f"Recent WhatsApp messages for {chat.get('title') or jid}.",
                     }
                 )
-        if self.imessage is not None:
+        if self._imessage_enabled():
             resources.extend(
                 [
                     {
@@ -598,29 +616,39 @@ class McpServer:
         return {"ok": True, "updates": payload.get("updates", [])}
 
     async def _tool_imessage_list_chats(self, *, limit: int) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         payload = await self.imessage.get_chats(limit=limit)
         return {"ok": True, "chats": payload.get("chats", [])}
 
     async def _tool_imessage_get_auth_status(self) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         return await self.imessage.get_status(limit=50)
 
     async def _tool_imessage_get_messages(self, *, chat_id: str, limit: int) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         payload = await self.imessage.get_chat(chat_id, limit=limit)
         return {"ok": True, "chat": payload.get("chat"), "messages": payload.get("messages", [])}
 
     async def _tool_imessage_send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         payload = await self.imessage.send_message(chat_id=chat_id, text=text)
         return {"ok": True, "message": payload.get("message")}
 
     async def _tool_imessage_get_updates(self, *, limit: int) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         payload = await self.imessage.get_updates(limit=limit)
@@ -635,11 +663,13 @@ class McpServer:
             except WhatsAppBridgeError as exc:
                 whatsapp = {"ok": False, "last_error": str(exc)}
         imessage = None
-        if self.imessage is not None:
+        if self._imessage_enabled():
             try:
                 imessage = await self.imessage.get_status(limit=50)
             except IMessageBridgeError as exc:
                 imessage = {"ok": False, "last_error": str(exc)}
+        elif self.imessage is not None:
+            imessage = {"ok": True, "enabled": False, "available": False, "last_error": None}
         return {
             "ok": True,
             "upstream": identity,
@@ -675,6 +705,8 @@ class McpServer:
         }
 
     async def _resource_imessage_config(self) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            raise McpHttpError(404, "Messages integration is disabled")
         if self.imessage is None:
             raise McpHttpError(404, "iMessage bridge is unavailable")
         payload = await self.imessage.get_status(limit=200)
@@ -689,7 +721,7 @@ class McpServer:
         }
 
     def _tools(self) -> list[dict[str, object]]:
-        return [
+        tools = [
             {
                 "name": "telegram.list_chats",
                 "description": "List chats visible through the Cloud folder policy.",
@@ -825,46 +857,65 @@ class McpServer:
                 "description": "Fetch recent WhatsApp message events from chats carrying the Cloud label.",
                 "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
             },
-            {
-                "name": "imessage.list_chats",
-                "description": "List local iMessage chats visible in the Messages app.",
-                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}},
-            },
-            {
-                "name": "imessage.get_auth_status",
-                "description": "Get local iMessage integration status, including Messages automation and chat.db access.",
-                "inputSchema": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "imessage.get_messages",
-                "description": "Get recent messages from one local iMessage chat.",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["chat_id"],
-                    "properties": {
-                        "chat_id": {"type": "string", "description": "Messages chat identifier such as any;-;+15551234567 or any;+;chat..."},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
-                    },
-                },
-            },
-            {
-                "name": "imessage.send_message",
-                "description": "Send a text message into one local iMessage chat via the Messages app.",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["chat_id", "text"],
-                    "properties": {
-                        "chat_id": {"type": "string"},
-                        "text": {"type": "string"},
-                    },
-                },
-            },
-            {
-                "name": "imessage.get_updates",
-                "description": "Fetch recent iMessage message events from the local Messages database.",
-                "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}},
-            },
         ]
+        if self._imessage_enabled():
+            tools.extend(
+                [
+                    {
+                        "name": "imessage.list_chats",
+                        "description": "List local iMessage chats visible in the Messages app.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                            },
+                        },
+                    },
+                    {
+                        "name": "imessage.get_auth_status",
+                        "description": "Get local iMessage integration status, including Messages automation and chat.db access.",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                    {
+                        "name": "imessage.get_messages",
+                        "description": "Get recent messages from one local iMessage chat.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["chat_id"],
+                            "properties": {
+                                "chat_id": {
+                                    "type": "string",
+                                    "description": "Messages chat identifier such as any;-;+15551234567 or any;+;chat...",
+                                },
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                            },
+                        },
+                    },
+                    {
+                        "name": "imessage.send_message",
+                        "description": "Send a text message into one local iMessage chat via the Messages app.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["chat_id", "text"],
+                            "properties": {
+                                "chat_id": {"type": "string"},
+                                "text": {"type": "string"},
+                            },
+                        },
+                    },
+                    {
+                        "name": "imessage.get_updates",
+                        "description": "Fetch recent iMessage message events from the local Messages database.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                            },
+                        },
+                    },
+                ]
+            )
+        return tools
 
     async def _fan_out_updates(self) -> None:
         assert self._update_queue is not None

@@ -151,6 +151,9 @@ class ProxyDashboardServer:
             if method == "POST" and url.path == "/api/imessage/visible-chats":
                 await self._handle_imessage_visible_chats_post(writer, body)
                 return
+            if method == "POST" and url.path == "/api/imessage/enabled":
+                await self._handle_imessage_enabled_post(writer, body)
+                return
             if method == "POST" and url.path == "/api/mtproto/enabled":
                 await self._handle_mtproto_enabled_post(writer, body)
                 return
@@ -200,6 +203,7 @@ class ProxyDashboardServer:
                 "downstream_api_hash": self.config.downstream_api_hash,
                 "downstream_login_phone": "+15550000000",
                 "downstream_login_code": self.config.downstream_login_code,
+                "imessage_enabled": self.config.imessage_enabled,
                 "upstream_reconnect_min_delay": self.config.upstream_reconnect_min_delay,
                 "upstream_reconnect_max_delay": self.config.upstream_reconnect_max_delay,
                 "imessage_db_path": str(self.config.imessage_db_path),
@@ -208,11 +212,13 @@ class ProxyDashboardServer:
             "clients": self.mtproto.active_connections_snapshot(),
             "downstream_credentials": [self._serialize_credential(client) for client in issued_clients],
             "mcp": {
+                "scheme": self.config.mcp_scheme,
                 "host": self.config.mcp_host,
                 "port": self.config.mcp_port,
                 "path": self.config.mcp_path,
+                "endpoint": self.config.mcp_endpoint,
                 "listening": self.mcp.is_running,
-                "transport": "HTTP JSON-RPC",
+                "transport": f"{self.config.mcp_scheme.upper()} JSON-RPC",
                 "auth": "Authorization: Bearer <token>",
                 "allowed_origin": "localhost / 127.0.0.1",
                 "token_hidden": True,
@@ -276,9 +282,30 @@ class ProxyDashboardServer:
         return payload
 
     async def _build_imessage_auth(self) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            return {
+                "ok": True,
+                "enabled": False,
+                "available": False,
+                "connected": False,
+                "has_session": False,
+                "messages_app_accessible": self.config.imessage_messages_app_accessible,
+                "database_accessible": self.config.imessage_database_accessible,
+                "messages_app_error": None,
+                "database_error": None,
+                "automation_hint": "Enabling Messages will prompt macOS for Messages control access and may require Full Disk Access for chat history.",
+                "db_path": str(self.config.imessage_db_path),
+                "accounts": [],
+                "all_chats": [],
+                "visible_chats": [],
+                "visible_chat_ids": [],
+                "chats": [],
+                "last_error": None,
+            }
         if self.imessage is None:
             return {
                 "ok": False,
+                "enabled": True,
                 "available": False,
                 "connected": False,
                 "has_session": False,
@@ -290,16 +317,23 @@ class ProxyDashboardServer:
         except IMessageBridgeError as exc:
             return {
                 "ok": False,
+                "enabled": True,
                 "available": False,
                 "connected": False,
                 "has_session": False,
                 "chats": [],
                 "last_error": str(exc),
             }
+        self.config.imessage_messages_app_accessible = bool(payload.get("messages_app_accessible"))
+        self.config.imessage_database_accessible = bool(payload.get("database_accessible"))
+        self.config.save_imessage_settings()
+        payload["enabled"] = True
         payload["available"] = True
         return payload
 
     async def _build_imessage_chat(self, chat_id: str) -> dict[str, object]:
+        if not self.config.imessage_enabled:
+            return {"chat": None, "messages": [], "error": "Messages integration is disabled"}
         if self.imessage is None:
             return {"chat": None, "messages": [], "error": "iMessage bridge is unavailable"}
         try:
@@ -309,6 +343,9 @@ class ProxyDashboardServer:
         return payload
 
     async def _handle_imessage_visible_chats_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        if not self.config.imessage_enabled:
+            await self._write_json(writer, 400, {"error": "Messages integration is disabled"})
+            return
         if self.imessage is None:
             await self._write_json(writer, 500, {"error": "iMessage bridge is unavailable"})
             return
@@ -326,6 +363,20 @@ class ProxyDashboardServer:
         except IMessageBridgeError as exc:
             await self._write_json(writer, 400, {"error": str(exc)})
             return
+        await self._write_json(writer, 200, result)
+
+    async def _handle_imessage_enabled_post(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        try:
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            await self._write_json(writer, 400, {"error": "Expected a JSON request body"})
+            return
+
+        enabled = bool(payload.get("enabled"))
+        self.config.imessage_enabled = enabled
+        self.config.save_imessage_settings()
+        result = await self._build_imessage_auth()
+        result["message"] = "Messages integration enabled." if enabled else "Messages integration disabled."
         await self._write_json(writer, 200, result)
 
     async def _write_json(self, writer: asyncio.StreamWriter, status: int, payload: dict[str, object]) -> None:
@@ -528,6 +579,10 @@ class ProxyDashboardServer:
         if not host:
             await self._write_json(writer, 400, {"error": "MCP host is required"})
             return
+        scheme = str(payload.get("scheme", self.config.mcp_scheme or "http")).strip().lower()
+        if scheme not in {"http", "https"}:
+            await self._write_json(writer, 400, {"error": "MCP protocol must be http or https"})
+            return
         try:
             port = int(payload.get("port", 0))
         except (TypeError, ValueError):
@@ -536,34 +591,53 @@ class ProxyDashboardServer:
         if not 1 <= port <= 65535:
             await self._write_json(writer, 400, {"error": "MCP port must be between 1 and 65535"})
             return
+        previous_scheme = self.config.mcp_scheme
 
-        if host == self.config.mcp_host and port == self.config.mcp_port and self.mcp.is_running:
+        if (
+            host == self.config.mcp_host
+            and port == self.config.mcp_port
+            and scheme == previous_scheme
+            and self.mcp.is_running
+        ):
             await self._write_json(
                 writer,
                 200,
                 {
                     "ok": True,
+                    "scheme": self.config.mcp_scheme,
                     "host": self.config.mcp_host,
                     "port": self.config.mcp_port,
                     "path": self.config.mcp_path,
+                    "endpoint": self.config.mcp_endpoint,
                     "listening": self.mcp.is_running,
-                    "message": "MCP listener already matches the requested interface and port.",
+                    "message": "MCP listener already matches the requested protocol, interface, and port.",
                 },
             )
             return
 
+        self.config.mcp_scheme = scheme
+        try:
+            self.config.validate_mcp_tls_config()
+        except ValueError as exc:
+            self.config.mcp_scheme = previous_scheme
+            await self._write_json(writer, 400, {"error": str(exc)})
+            return
+
         previous_host = self.config.mcp_host
         previous_port = self.config.mcp_port
+        previous_scheme = self.config.mcp_scheme
         was_running = self.mcp.is_running
 
         try:
             if was_running:
                 await self.mcp.stop()
+            self.config.mcp_scheme = scheme
             self.config.mcp_host = host
             self.config.mcp_port = port
             self.config.save_mcp_settings()
             await self.mcp.start()
         except Exception as exc:
+            self.config.mcp_scheme = previous_scheme
             self.config.mcp_host = previous_host
             self.config.mcp_port = previous_port
             self.config.save_mcp_settings()
@@ -585,11 +659,15 @@ class ProxyDashboardServer:
             200,
             {
                 "ok": True,
+                "scheme": self.config.mcp_scheme,
                 "host": self.config.mcp_host,
                 "port": self.config.mcp_port,
                 "path": self.config.mcp_path,
+                "endpoint": self.config.mcp_endpoint,
                 "listening": self.mcp.is_running,
-                "message": f"MCP listener moved to {self.config.mcp_host}:{self.config.mcp_port}.",
+                "message": (
+                    f"MCP listener moved to {self.config.mcp_endpoint}."
+                ),
             },
         )
 

@@ -40,7 +40,7 @@
 
     <div class="workspace">
       <aside class="panel folder-rail">
-        <div class="folder-title">Folders</div>
+        <div class="folder-title">Tools</div>
         <button class="folder-button active" data-section="telegram">
           <div class="folder-label-row">
             <div class="folder-name" id="telegramFolderName">Telegram</div>
@@ -80,14 +80,14 @@
           <div class="section-body">
             <div class="telegram-shell">
               <div class="telegram-nav">
-                <button class="telegram-pane-button active" data-telegram-pane="chats">Chats</button>
+                <button class="telegram-pane-button active" data-telegram-pane="chats" id="telegramChatsTab">Chats</button>
                 <button class="telegram-pane-button" data-telegram-pane="apis">APIs</button>
                 <button class="telegram-pane-button" data-telegram-pane="mtproto">MTProto</button>
                 <button class="telegram-pane-button" data-telegram-pane="settings">Settings</button>
               </div>
 
               <section class="telegram-pane active" data-telegram-pane-panel="chats">
-                <div class="credential-card auth-guide">
+                <div class="credential-card auth-guide chat-hint">
                   <div class="row">
                     <div class="title">Cloud visibility rule</div>
                     <span class="pill">Important</span>
@@ -264,7 +264,7 @@
               </div>
 
               <section class="whatsapp-pane active" data-whatsapp-pane-panel="chats">
-                <div class="credential-card auth-guide">
+                <div class="credential-card auth-guide chat-hint">
                   <div class="row">
                     <div class="title">Cloud visibility rule</div>
                     <span class="pill">Label scoped</span>
@@ -338,10 +338,32 @@
             <span class="badge" id="imessageBadge">Local access</span>
           </div>
           <div class="section-body">
+            <div class="credential-card integration-gate" id="imessageDisabledCard" hidden>
+              <div class="row">
+                <div class="title">Messages is currently off</div>
+                <span class="pill">Opt in</span>
+              </div>
+              <label class="toggle-row" for="enableIMessageToggle">
+                <input type="checkbox" id="enableIMessageToggle" />
+                <span class="toggle-box" aria-hidden="true"></span>
+                <span>
+                  <strong>Messages access</strong><br />
+                  Turn this on when you want local Messages chats and sends exposed in Telethon Proxy.
+                </span>
+              </label>
+              <div class="meta">
+                Enable Messages when you want Telethon Proxy to read local Messages chats or send through the Messages app. macOS will ask for Messages control access, and history reads may also require Full Disk Access.
+              </div>
+              <img
+                class="permission-warning-shot"
+                src="./assets/imessage-permission-warning.svg"
+                alt="Example macOS prompt asking Telethon Proxy for access to control Messages"
+              />
+            </div>
             <div class="telegram-shell">
               <div class="telegram-nav">
-                <button class="imessage-pane-button active" data-imessage-pane="all-chats">All chats</button>
-                <button class="imessage-pane-button" data-imessage-pane="visible-chats">Visible chats</button>
+                <button class="imessage-pane-button active" data-imessage-pane="all-chats" id="imessageAllChatsTab">All chats</button>
+                <button class="imessage-pane-button" data-imessage-pane="visible-chats" id="imessageVisibleChatsTab">Visible chats</button>
                 <button class="imessage-pane-button" data-imessage-pane="settings">Settings</button>
               </div>
 
@@ -356,7 +378,7 @@
                   </section>
 
                   <section class="imessage-pane" data-imessage-pane-panel="visible-chats">
-                    <div class="credential-card auth-guide">
+                    <div class="credential-card auth-guide chat-hint">
                       <div class="row">
                         <div class="title">Visible downstream set</div>
                         <span class="pill">MCP scope</span>
@@ -386,6 +408,21 @@
 
               <section class="imessage-pane" data-imessage-pane-panel="settings">
                 <div class="settings-grid whatsapp-settings-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">Messages access</div>
+                      <span class="pill">On or off</span>
+                    </div>
+                    <label class="toggle-row" for="imessageEnabledSettingToggle">
+                      <input type="checkbox" id="imessageEnabledSettingToggle" />
+                      <span class="toggle-box" aria-hidden="true"></span>
+                      <span>
+                        <strong>Allow local Messages access</strong><br />
+                        Expose local Messages chats, history, and sends through Telethon Proxy.
+                      </span>
+                    </label>
+                  </div>
+
                   <div class="credential-card auth-guide">
                     <div class="row">
                       <div class="title">macOS access</div>

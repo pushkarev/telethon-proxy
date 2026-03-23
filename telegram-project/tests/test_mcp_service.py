@@ -242,6 +242,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             downstream_host="100.92.237.54",
             mtproto_port=9001,
             downstream_api_id=900000,
+            imessage_enabled=True,
         )
         self.server = McpServer(self.config, _FakeUpstream(), whatsapp=_FakeWhatsApp(), imessage=_FakeIMessage())
         await self.server.start()
@@ -456,6 +457,8 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("telegram://updates", uris)
         self.assertIn("whatsapp://config", uris)
         self.assertIn("whatsapp://chats", uris)
+        self.assertIn("imessage://config", uris)
+        self.assertIn("imessage://chats", uris)
 
         status, payload, _ = await self._request(
             "POST",
@@ -470,6 +473,64 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         self.assertIn("Proxy User", payload["result"]["contents"][0]["text"])
+
+    async def test_imessage_tools_and_resources_hide_when_disabled(self):
+        self.config.imessage_enabled = False
+
+        status, payload, headers = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 50,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "disabled-check"}},
+            },
+        )
+        self.assertEqual(status, 200)
+        session_id = headers["mcp-session-id"]
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {"jsonrpc": "2.0", "id": 51, "method": "tools/list"},
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        tool_names = [tool["name"] for tool in payload["result"]["tools"]]
+        self.assertNotIn("imessage.list_chats", tool_names)
+        self.assertNotIn("imessage.get_auth_status", tool_names)
+        self.assertNotIn("imessage.get_messages", tool_names)
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {"jsonrpc": "2.0", "id": 52, "method": "resources/list"},
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        uris = [item["uri"] for item in payload["result"]["resources"]]
+        self.assertNotIn("imessage://config", uris)
+        self.assertNotIn("imessage://chats", uris)
+        self.assertFalse(any(uri.startswith("imessage://chat/") for uri in uris))
+
+        status, payload, _ = await self._request(
+            "POST",
+            self.config.mcp_path,
+            {
+                "jsonrpc": "2.0",
+                "id": 53,
+                "method": "tools/call",
+                "params": {
+                    "name": "imessage.get_auth_status",
+                    "arguments": {},
+                },
+            },
+            session_id=session_id,
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("error", payload)
+        self.assertIn("Messages integration is disabled", payload["error"]["message"])
 
     async def test_subscription_stream_receives_update_notification(self):
         status, payload, headers = await self._request(

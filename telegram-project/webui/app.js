@@ -46,6 +46,7 @@ const DEFAULT_WHATSAPP_AUTH = {
 };
 
 const DEFAULT_IMESSAGE_AUTH = {
+  enabled: false,
   available: true,
   connected: false,
   has_session: false,
@@ -105,6 +106,21 @@ function fmtTime(value) {
 function fmtDay(value) {
   if (!value) return "";
   return new Date(value).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function fmtListDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  return date.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 }
 
 function esc(value) {
@@ -208,9 +224,13 @@ function setActiveIMessagePane(pane) {
   document.querySelectorAll(".imessage-pane").forEach((node) => {
     node.classList.toggle("active", node.dataset.imessagePanePanel === pane);
   });
+  const enabledShell = el("imessageEnabledShell");
+  if (enabledShell) {
+    enabledShell.hidden = !imessageAuthState?.enabled;
+  }
   const shell = el("imessageChatShell");
   if (shell) {
-    shell.classList.toggle("hidden", pane === "settings");
+    shell.classList.toggle("hidden", !imessageAuthState?.enabled || pane === "settings");
   }
 }
 
@@ -239,6 +259,23 @@ function getIMessageVisibleChatIds(state = imessageAuthState) {
     return state.visible_chat_ids;
   }
   return getIMessageVisibleChats(state).map((chat) => chat.chat_id);
+}
+
+function bindIMessageEnabledToggle(id, enabled) {
+  const toggle = el(id);
+  if (!toggle) return;
+  toggle.checked = Boolean(enabled);
+  toggle.onchange = async () => {
+    toggle.disabled = true;
+    try {
+      await setIMessageEnabled(toggle.checked);
+    } catch (error) {
+      toggle.checked = Boolean(imessageAuthState?.enabled);
+      setNotice(error.message || String(error), "error");
+    } finally {
+      toggle.disabled = false;
+    }
+  };
 }
 
 function setConnectionCheck(id, connected, label) {
@@ -380,24 +417,28 @@ async function loadOverview() {
     await loadWhatsAppChat(selectedWhatsAppJid);
   }
 
-  const imessageAllChats = getIMessageAllChats(data.imessage);
-  const imessageVisibleChats = getIMessageVisibleChats(data.imessage);
-  const preferredIMessageChats = activeIMessagePane === "visible-chats" ? imessageVisibleChats : imessageAllChats;
-  const imessageAllChatIds = new Set(imessageAllChats.map((chat) => chat.chat_id));
-  if (selectedIMessageChatId && !imessageAllChatIds.has(selectedIMessageChatId)) {
+  if (!data.imessage.enabled) {
     selectedIMessageChatId = null;
-  }
-  if (activeIMessagePane === "visible-chats") {
-    const visibleChatIds = new Set(imessageVisibleChats.map((chat) => chat.chat_id));
-    if (selectedIMessageChatId && !visibleChatIds.has(selectedIMessageChatId)) {
+  } else {
+    const imessageAllChats = getIMessageAllChats(data.imessage);
+    const imessageVisibleChats = getIMessageVisibleChats(data.imessage);
+    const preferredIMessageChats = activeIMessagePane === "visible-chats" ? imessageVisibleChats : imessageAllChats;
+    const imessageAllChatIds = new Set(imessageAllChats.map((chat) => chat.chat_id));
+    if (selectedIMessageChatId && !imessageAllChatIds.has(selectedIMessageChatId)) {
       selectedIMessageChatId = null;
     }
-  }
-  if (!selectedIMessageChatId && preferredIMessageChats.length) {
-    selectedIMessageChatId = preferredIMessageChats[0].chat_id;
-    await loadIMessageChat(selectedIMessageChatId);
-  } else if (selectedIMessageChatId) {
-    await loadIMessageChat(selectedIMessageChatId);
+    if (activeIMessagePane === "visible-chats") {
+      const visibleChatIds = new Set(imessageVisibleChats.map((chat) => chat.chat_id));
+      if (selectedIMessageChatId && !visibleChatIds.has(selectedIMessageChatId)) {
+        selectedIMessageChatId = null;
+      }
+    }
+    if (!selectedIMessageChatId && preferredIMessageChats.length) {
+      selectedIMessageChatId = preferredIMessageChats[0].chat_id;
+      await loadIMessageChat(selectedIMessageChatId);
+    } else if (selectedIMessageChatId) {
+      await loadIMessageChat(selectedIMessageChatId);
+    }
   }
 }
 
@@ -419,6 +460,7 @@ function renderOverview(data) {
   const imessageChatCount = getIMessageVisibleChats(imessageAuth).length;
 
   setText("chatCount", telegramChatCount + whatsappChatCount + imessageChatCount);
+  setText("telegramChatsTab", `Chats (${telegramChatCount})`);
   setText("dashboardAddress", `${data.config.dashboard_host}:${data.config.dashboard_port}`);
   setText("folderBadge", data.config.cloud_folder_name);
   setText("heroScopePill", `${data.config.cloud_folder_name} scope`);
@@ -432,11 +474,16 @@ function renderOverview(data) {
   );
   setText(
     "heroIMessagePill",
-    imessageAuth.connected ? "Messages connected" : (imessageAuth.messages_app_accessible ? "Messages local access" : "Messages permission needed"),
+    !imessageAuth.enabled
+      ? "Messages off"
+      : (imessageAuth.connected ? "Messages connected" : (imessageAuth.messages_app_accessible ? "Messages local access" : "Messages permission needed")),
   );
   setText("telegramBadge", telegramAuth.has_session ? "Authorized" : "Needs login");
   setText("whatsappBadge", whatsappAuth.connected ? "Connected" : (whatsappAuth.has_session ? "Reconnect needed" : "Needs QR"));
-  setText("imessageBadge", imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed"));
+  setText(
+    "imessageBadge",
+    !imessageAuth.enabled ? "Off" : (imessageAuth.connected ? "Connected" : (imessageAuth.messages_app_accessible ? "Local access" : "Permission needed")),
+  );
   syncConnectionChecks({ telegramAuth, whatsappAuth, imessageAuth });
 
   setHtml("configGrid", [
@@ -444,7 +491,7 @@ function renderOverview(data) {
     ["WhatsApp Cloud label", data.config.whatsapp_cloud_label_name || "Cloud"],
     ["Messages history DB", data.config.imessage_db_path || "default"],
     ["Background API", `${data.config.dashboard_host}:${data.config.dashboard_port}`],
-    ["MCP endpoint", `${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
+    ["MCP endpoint", data.mcp.endpoint || `${String(data.mcp.scheme || "http").toLowerCase()}://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
     ["Reconnect backoff", `${data.config.upstream_reconnect_min_delay}s -> ${data.config.upstream_reconnect_max_delay}s`],
     ["Allow member listing", data.config.allow_member_listing ? "yes" : "no"],
   ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
@@ -456,8 +503,10 @@ function renderOverview(data) {
   ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join(""));
   renderMtprotoControls(data);
 
+  const mcpScheme = String(data.mcp.scheme || "http").toLowerCase() === "https" ? "https" : "http";
+  const mcpEndpoint = data.mcp.endpoint || `${mcpScheme}://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`;
   el("mcpGrid").innerHTML = [
-    ["Endpoint", `http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`],
+    ["Endpoint", mcpEndpoint],
     ["Listener", data.mcp.listening ? "listening" : "offline"],
     ["Transport", data.mcp.transport],
     ["Auth", data.mcp.auth],
@@ -471,6 +520,13 @@ function renderOverview(data) {
       <h3>Bind interface and port</h3>
     </div>
     <form id="mcpListenerForm" class="mcp-settings-form">
+      <label class="field">
+        <span>Protocol</span>
+        <select id="mcpSchemeSelect" name="scheme">
+          <option value="http"${mcpScheme === "http" ? " selected" : ""}>HTTP</option>
+          <option value="https"${mcpScheme === "https" ? " selected" : ""}>HTTPS</option>
+        </select>
+      </label>
       <label class="field">
         <span>Interface</span>
         <select id="mcpHostSelect" name="host">
@@ -486,7 +542,7 @@ function renderOverview(data) {
         <input id="mcpPortInput" name="port" type="text" inputmode="numeric" value="${esc(data.mcp.port)}" autocomplete="off" />
       </label>
       <div class="meta">
-        Pick the interface you want MCP to bind to, then choose the port. Localhost keeps it private to this Mac; the Tailscale or network interfaces make it reachable from other devices on that network.
+        Pick the protocol, interface, and port you want MCP to bind to. Localhost keeps it private to this Mac; the Tailscale or network interfaces make it reachable from other devices on that network. HTTPS requires the backend to have TLS files configured through <span class="mono">TP_MCP_TLS_CERT</span> and <span class="mono">TP_MCP_TLS_KEY</span>.
       </div>
       <div class="auth-actions">
         <button type="submit" class="primary-button" id="applyMcpConfigButton">Apply and restart MCP</button>
@@ -502,7 +558,7 @@ function renderOverview(data) {
     </div>
     <div class="meta">
       The bearer token stays hidden in the app. Use copy when you need it, or revoke it to invalidate the current token and copy a fresh one.<br />
-      Example endpoint: <span class="mono">${esc(`http://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`)}</span><br />
+      Example endpoint: <span class="mono">${esc(mcpEndpoint)}</span><br />
       Suggested tools: <span class="mono">telegram.list_chats</span>, <span class="mono">whatsapp.list_chats</span>, <span class="mono">imessage.list_chats</span>, <span class="mono">imessage.get_messages</span>, <span class="mono">imessage.send_message</span><br />
       Resources: <span class="mono">telegram://config</span>, <span class="mono">whatsapp://config</span>, <span class="mono">imessage://config</span>, <span class="mono">imessage://chat/&lt;chat_id&gt;</span><br />
       Subscriptions: open SSE with <span class="mono">Mcp-Session-Id</span> and subscribe to <span class="mono">telegram://updates</span> or <span class="mono">telegram://chat/&lt;peer_id&gt;</span>
@@ -542,7 +598,11 @@ function renderOverview(data) {
       const button = el("applyMcpConfigButton");
       button.disabled = true;
       try {
-        await setMcpConfig(el("mcpHostSelect").value.trim(), el("mcpPortInput").value.trim());
+        await setMcpConfig(
+          el("mcpHostSelect").value.trim(),
+          el("mcpPortInput").value.trim(),
+          el("mcpSchemeSelect").value.trim(),
+        );
       } catch (error) {
         setNotice(error.message || "Could not update MCP listener settings.", "error");
       } finally {
@@ -638,12 +698,15 @@ function renderChats(chats) {
 
   el("chatList").innerHTML = chats.length
     ? chats.map((chat) => `
-        <div class="chat ${selectedPeerId === chat.peer_id ? "active" : ""}" data-peer="${chat.peer_id}">
+        <div class="chat chat-compact ${selectedPeerId === chat.peer_id ? "active" : ""}" data-peer="${chat.peer_id}">
           <div class="row">
             <div class="title">${esc(chat.title)}</div>
-            <span class="pill">${esc(chat.kind)}</span>
+            <div class="row chat-title-actions">
+              <span class="meta chat-inline-date">${esc(fmtListDate(chat.last_message_at) || "no recent")}</span>
+              <span class="pill">${esc(chat.kind)}</span>
+            </div>
           </div>
-          <div class="meta">
+          <div class="meta chat-compact-meta">
             ${esc(firstNonEmpty(chat.username ? `@${chat.username}` : "", `peer ${chat.peer_id}`))}<br />
             ${esc(compactLastSeen(chat.last_message_at))}
           </div>
@@ -667,12 +730,15 @@ function renderWhatsAppChats(chats) {
 
   el("whatsappChatList").innerHTML = chats.length
     ? chats.map((chat) => `
-        <div class="chat ${selectedWhatsAppJid === chat.jid ? "active" : ""}" data-jid="${esc(chat.jid)}">
+        <div class="chat chat-compact ${selectedWhatsAppJid === chat.jid ? "active" : ""}" data-jid="${esc(chat.jid)}">
           <div class="row">
             <div class="title">${esc(chat.title)}</div>
-            <span class="pill">${esc(chat.kind)}</span>
+            <div class="row chat-title-actions">
+              <span class="meta chat-inline-date">${esc(fmtListDate(chat.last_message_at) || "no recent")}</span>
+              <span class="pill">${esc(chat.kind)}</span>
+            </div>
           </div>
-          <div class="meta">
+          <div class="meta chat-compact-meta">
             ${esc(chat.jid)}<br />
             ${esc(compactLastSeen(chat.last_message_at))}
           </div>
@@ -703,14 +769,20 @@ function renderIMessageChats(listId, chats, {
           <div class="row">
             <div class="title">${esc(chat.title)}</div>
             <div class="row chat-title-actions">
-              <span class="meta chat-inline-date">${esc(compactLastSeen(chat.last_message_at))}</span>
+              <span class="meta chat-inline-date">${esc(fmtListDate(chat.last_message_at) || "no recent")}</span>
               ${showVisibilityToggle
-                ? `<label class="chat-visibility-toggle">
-                    <input type="checkbox" data-chat-visibility="${esc(chat.chat_id)}"${visibleSet.has(chat.chat_id) ? " checked" : ""} />
-                    <span>Downstream</span>
+                ? `<label class="chat-visibility-toggle${compact ? " compact-toggle" : ""}">
+                    <input
+                      type="checkbox"
+                      data-chat-visibility="${esc(chat.chat_id)}"
+                      aria-label="Visible downstream"
+                      title="Visible downstream"
+                      ${visibleSet.has(chat.chat_id) ? " checked" : ""}
+                    />
+                    ${compact ? "" : "<span>Downstream</span>"}
                   </label>`
                 : ""}
-              <span class="pill">${esc(chat.kind)}</span>
+              ${compact ? "" : `<span class="pill">${esc(chat.kind)}</span>`}
             </div>
           </div>
           <div class="meta ${compact ? "chat-compact-meta" : ""}">
@@ -1085,10 +1157,48 @@ function renderIMessageAuth(state) {
   };
   syncConnectionChecks({ imessageAuth: imessageAuthState });
 
+  const disabledCard = el("imessageDisabledCard");
+  const enabledShell = el("imessageEnabledShell");
+  const permissionShot = disabledCard?.querySelector(".permission-warning-shot");
   const allChats = getIMessageAllChats(imessageAuthState);
   const visibleChats = getIMessageVisibleChats(imessageAuthState);
   const accounts = Array.isArray(imessageAuthState.accounts) ? imessageAuthState.accounts : [];
-  el("imessageBadge").textContent = imessageAuthState.connected ? "Connected" : (imessageAuthState.messages_app_accessible ? "Local access" : "Permission needed");
+  setText("imessageAllChatsTab", `All chats (${allChats.length})`);
+  setText("imessageVisibleChatsTab", `Visible chats (${visibleChats.length})`);
+  bindIMessageEnabledToggle("enableIMessageToggle", imessageAuthState.enabled);
+  bindIMessageEnabledToggle("imessageEnabledSettingToggle", imessageAuthState.enabled);
+  if (disabledCard) {
+    disabledCard.hidden = Boolean(imessageAuthState.enabled);
+  }
+  if (permissionShot) {
+    permissionShot.hidden = Boolean(imessageAuthState.messages_app_accessible);
+  }
+  if (enabledShell) {
+    enabledShell.hidden = !imessageAuthState.enabled;
+  }
+  el("imessageBadge").textContent = !imessageAuthState.enabled
+    ? "Off"
+    : (imessageAuthState.connected ? "Connected" : (imessageAuthState.messages_app_accessible ? "Local access" : "Permission needed"));
+
+  if (!imessageAuthState.enabled) {
+    selectedIMessageChatId = null;
+    el("imessageAuthStatus").innerHTML = `
+      <div class="row">
+        <div class="title">Messages access is off</div>
+        <span class="pill">disabled</span>
+      </div>
+      <div class="meta">
+        Enable Messages when you want Telethon Proxy to read local Messages chats or send through the Messages app. macOS will ask for Messages control access, and chat history may also require Full Disk Access.
+      </div>
+      ${imessageAuthState.messages_app_accessible ? '<div class="meta">Messages automation access is already granted on this Mac.</div>' : ""}
+    `;
+    el("imessageMessageHeading").textContent = "Messages";
+    el("imessageChatKindPill").textContent = "off";
+    el("imessageChatScreenMeta").textContent = "Enable Messages to inspect local chats and history.";
+    el("imessageMessageList").innerHTML = '<div class="empty">Messages integration is currently turned off.</div>';
+    return;
+  }
+
   el("imessageAuthStatus").innerHTML = `
     <div class="row">
       <div class="title">Bridge status</div>
@@ -1106,8 +1216,13 @@ function renderIMessageAuth(state) {
     ${imessageAuthState.automation_hint ? `<div class="meta">${esc(imessageAuthState.automation_hint)}</div>` : ""}
     <div class="meta">Use <strong>All chats</strong> to choose which local threads should be passed downstream. Only <strong>Visible chats</strong> are exposed through MCP.</div>
     ${!imessageAuthState.database_accessible ? `
+      <div class="inline-notice">
+        Messages history is unavailable because Telethon Proxy cannot read <span class="mono">chat.db</span> yet.
+        <a href="#" class="inline-link-action" id="openIMessageFilesAccessLink">Enable Full Disk Access</a>
+      </div>
+    ` : ""}
+    ${!imessageAuthState.database_accessible ? `
       <div class="row">
-        <button type="button" class="secondary-button compact-button" id="openIMessageFilesAccessButton">Open Full Disk Access</button>
         <button type="button" class="secondary-button compact-button" id="openIMessageAutomationButton">Open Automation</button>
         <button type="button" class="secondary-button compact-button" id="copyIMessageDbPathButton">Copy history path</button>
       </div>
@@ -1119,9 +1234,10 @@ function renderIMessageAuth(state) {
       : ""}
   `;
 
-  const openFilesAccessButton = document.getElementById("openIMessageFilesAccessButton");
-  if (openFilesAccessButton) {
-    openFilesAccessButton.addEventListener("click", async () => {
+  const openFilesAccessLink = document.getElementById("openIMessageFilesAccessLink");
+  if (openFilesAccessLink) {
+    openFilesAccessLink.addEventListener("click", async (event) => {
+      event.preventDefault();
       try {
         if (!bridge?.openSystemSettings) {
           setNotice("Open the desktop app to jump directly to the macOS privacy settings.", "error");
@@ -1180,6 +1296,9 @@ async function refreshWhatsAppAuth() {
 
 async function refreshIMessageAuth() {
   renderIMessageAuth(await getJson("/api/imessage/auth"));
+  if (!imessageAuthState.enabled) {
+    return;
+  }
   await syncIMessageSelectionForActivePane();
 }
 
@@ -1301,8 +1420,21 @@ async function setMtprotoEnabled(enabled) {
   await loadOverview();
 }
 
-async function setMcpConfig(host, port) {
-  const result = await postJson("/api/mcp/config", { host, port });
+async function setIMessageEnabled(enabled) {
+  const result = await postJson("/api/imessage/enabled", { enabled });
+  if (enabled) {
+    setActiveSection("imessage");
+    setActiveIMessagePane("settings");
+  }
+  setNotice(
+    result.message || (enabled ? "Messages integration enabled." : "Messages integration disabled."),
+    "success",
+  );
+  await loadOverview();
+}
+
+async function setMcpConfig(host, port, scheme) {
+  const result = await postJson("/api/mcp/config", { host, port, scheme });
   setNotice(result.message || "MCP listener updated.", "success");
   await loadOverview();
 }

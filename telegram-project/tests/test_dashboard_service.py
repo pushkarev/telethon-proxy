@@ -305,6 +305,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
             mtproto_port=9001,
             downstream_api_id=900000,
             cloud_folder_name="Cloud",
+            imessage_enabled=True,
             downstream_registry_name=str(registry_path),
             mcp_token="test-mcp-token",
         )
@@ -352,6 +353,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["config"]["cloud_folder_name"], "Cloud")
         self.assertTrue(payload["config"]["mtproto_enabled"])
         self.assertTrue(payload["config"]["mtproto_listening"])
+        self.assertTrue(payload["config"]["imessage_enabled"])
         self.assertEqual(payload["clients"][0]["label"], "openclaw")
         self.assertEqual(payload["chats"][0]["title"], "Cloud Chat")
         self.assertEqual(payload["upstream"]["phone"], "79936003330")
@@ -364,6 +366,8 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["mcp"]["token_hidden"])
         self.assertTrue(payload["mcp"]["listening"])
         self.assertTrue(payload["mcp"]["bind_options"])
+        self.assertEqual(payload["mcp"]["scheme"], "http")
+        self.assertEqual(payload["mcp"]["endpoint"], "http://127.0.0.1:8791/mcp")
         self.assertNotIn("token", payload["mcp"])
 
         status, body = await self._get("/api/chat?peer_id=-1000000000042")
@@ -403,6 +407,7 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertTrue(payload["ok"])
+        self.assertEqual(payload["scheme"], "http")
         self.assertEqual(payload["host"], "100.92.237.54")
         self.assertEqual(payload["port"], 8795)
         self.assertTrue(payload["listening"])
@@ -414,8 +419,33 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self._get("/api/overview")
         self.assertEqual(status, 200)
         payload = json.loads(body)
+        self.assertEqual(payload["mcp"]["scheme"], "http")
         self.assertEqual(payload["mcp"]["host"], "100.92.237.54")
         self.assertEqual(payload["mcp"]["port"], 8795)
+
+    async def test_mcp_config_route_switches_to_https_when_tls_files_exist(self):
+        cert_path = Path(self.tmp.name) / "mcp-cert.pem"
+        key_path = Path(self.tmp.name) / "mcp-key.pem"
+        cert_path.write_text("dummy cert\n", encoding="utf-8")
+        key_path.write_text("dummy key\n", encoding="utf-8")
+        self.config.mcp_tls_cert_name = str(cert_path)
+        self.config.mcp_tls_key_name = str(key_path)
+
+        status, body = await self._post("/api/mcp/config", {"host": "100.92.237.54", "port": 8795, "scheme": "https"})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["scheme"], "https")
+        self.assertEqual(payload["endpoint"], "https://100.92.237.54:8795/mcp")
+        self.assertEqual(self.config.mcp_scheme, "https")
+        self.assertEqual(self.config.mcp_host, "100.92.237.54")
+        self.assertEqual(self.config.mcp_port, 8795)
+
+    async def test_mcp_config_route_rejects_https_without_tls_files(self):
+        status, body = await self._post("/api/mcp/config", {"host": "100.92.237.54", "port": 8795, "scheme": "https"})
+        self.assertEqual(status, 400)
+        payload = json.loads(body)
+        self.assertIn("TP_MCP_TLS_CERT", payload["error"])
+        self.assertEqual(self.config.mcp_scheme, "http")
 
     async def test_mtproto_enable_toggle_route(self):
         status, body = await self._post("/api/mtproto/enabled", {"enabled": False})
@@ -498,9 +528,25 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self._get("/api/imessage/auth")
         self.assertEqual(status, 200)
         payload = json.loads(body)
+        self.assertTrue(payload["enabled"])
         self.assertTrue(payload["connected"])
         self.assertEqual(payload["chats"][0]["title"], "Alice")
         self.assertEqual(payload["all_chats"][0]["title"], "Alice")
+
+    async def test_imessage_auth_route_returns_disabled_state(self):
+        self.config.imessage_enabled = False
+        self.config.imessage_messages_app_accessible = True
+        self.config.imessage_database_accessible = True
+
+        status, body = await self._get("/api/imessage/auth")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["available"])
+        self.assertTrue(payload["messages_app_accessible"])
+        self.assertTrue(payload["database_accessible"])
+        self.assertEqual(payload["all_chats"], [])
+        self.assertIn("Full Disk Access", payload["automation_hint"])
 
     async def test_imessage_visible_chat_toggle_route(self):
         status, body = await self._post(
@@ -511,6 +557,23 @@ class DashboardServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(body)
         self.assertEqual(payload["visible_chats"], [])
         self.assertEqual(payload["visible_chat_ids"], [])
+
+    async def test_imessage_enable_toggle_route(self):
+        self.config.imessage_enabled = False
+
+        status, body = await self._post("/api/imessage/enabled", {"enabled": True})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["message"], "Messages integration enabled.")
+        self.assertTrue(self.config.imessage_enabled)
+
+        status, body = await self._post("/api/imessage/enabled", {"enabled": False})
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertFalse(payload["enabled"])
+        self.assertEqual(payload["message"], "Messages integration disabled.")
+        self.assertFalse(self.config.imessage_enabled)
 
     async def _get(self, path: str) -> tuple[int, str]:
         reader, writer = await asyncio.open_connection(self.config.dashboard_host, self.config.dashboard_port)
