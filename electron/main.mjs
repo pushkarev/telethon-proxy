@@ -135,7 +135,7 @@ async function createWindow() {
     minWidth: 1100,
     minHeight: 760,
     autoHideMenuBar: true,
-    backgroundColor: "#09111f",
+    backgroundColor: "#f6f0e4",
     title: "Telethon Proxy",
     webPreferences: {
       contextIsolation: true,

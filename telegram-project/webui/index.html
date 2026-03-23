@@ -8,334 +8,337 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <div class="shell">
-    <div class="shell-glow shell-glow-left"></div>
-    <div class="shell-glow shell-glow-right"></div>
-
-    <div class="wrap">
-      <header class="hero">
-        <div class="panel hero-main">
-          <div class="hero-topline">
-            <div class="eyebrow">Cloud Folder Proxy</div>
-            <div class="hero-status">
-              <span class="status-pill" id="serviceStatus">Monitoring</span>
-              <span class="meta-chip" id="generatedAtLabel">Waiting for data</span>
-            </div>
-          </div>
-
-          <h1>Telethon service control room</h1>
-          <div class="sub">A local desktop console for Telegram and WhatsApp access, Cloud-scoped chat surfaces, issued downstream sessions, and the private MCP endpoint this machine exposes.</div>
-
-          <div class="hero-ribbon">
-            <span class="hero-pill">Desktop-first auth</span>
-            <span class="hero-pill">Cloud-scoped isolation</span>
-            <span class="hero-pill">Keychain-backed secrets</span>
-          </div>
-
-          <div class="hero-detail-grid" id="overviewCards"></div>
+  <div class="wrap">
+    <div class="hero">
+      <div class="panel hero-main">
+        <div class="eyebrow">Cloud Folder Proxy</div>
+        <h1>Telethon service control room</h1>
+        <div class="sub">A local desktop console for Telegram and WhatsApp access, Cloud-scoped chat surfaces, issued downstream sessions, and the private MCP endpoint this machine exposes.</div>
+        <div class="hero-ribbon">
+          <span class="hero-pill">Desktop-first auth</span>
+          <span class="hero-pill">Cloud-scoped isolation</span>
+          <span class="hero-pill">Keychain-backed secrets</span>
         </div>
-
-        <div class="panel hero-side">
-          <div class="summary-card">
+      </div>
+      <div class="panel hero-side">
+        <div class="stat-grid">
+          <div class="stat-tile">
             <div class="stat-label">Connected clients</div>
             <div class="stat-value" id="clientCount">0</div>
-            <div class="stat-note" id="clientCountNote">No active sessions</div>
           </div>
-          <div class="summary-card">
-            <div class="stat-label">Telegram chats</div>
+          <div class="stat-tile">
+            <div class="stat-label">Accessible chats</div>
             <div class="stat-value" id="chatCount">0</div>
-            <div class="stat-note" id="chatCountNote">Cloud folder visibility</div>
           </div>
-          <div class="summary-card">
-            <div class="stat-label">API surface</div>
-            <div class="stat-value" id="apiSurfaceCount">0</div>
-            <div class="stat-note" id="apiSurfaceNote">Forwarded and local methods</div>
-          </div>
-          <div class="summary-card summary-card-compact">
+          <div class="stat-tile stat-tile-wide">
             <div class="stat-label">Background API</div>
-            <div class="meta mono" id="dashboardAddress"></div>
-          </div>
-          <div class="hero-note">
-            Telegram uses the upstream <span class="mono">Cloud</span> folder, while WhatsApp uses a <span class="mono">Cloud</span> label to scope local access.
+            <div class="meta"><span id="dashboardAddress"></span></div>
           </div>
         </div>
-      </header>
+        <div class="hero-note">
+          Telegram uses the upstream <span class="mono">Cloud</span> folder, while WhatsApp uses a <span class="mono">Cloud</span> label to scope local access.
+        </div>
+      </div>
+    </div>
 
-      <div id="notice" class="notice" hidden></div>
+    <div id="notice" class="notice" style="display:none"></div>
 
-      <div class="workspace">
-        <aside class="panel folder-rail">
-          <div class="folder-title">Workspace</div>
-          <button class="folder-button active" data-section="configuration">
-            <div class="folder-name">Configuration</div>
-            <div class="folder-meta">Operational details, issued sessions, and current upstream identity.</div>
-          </button>
-          <button class="folder-button" data-section="telegram">
-            <div class="folder-name">Telegram</div>
-            <div class="folder-meta">Cloud chats, forwarded APIs, and the upstream login flow.</div>
-          </button>
-          <button class="folder-button" data-section="whatsapp">
-            <div class="folder-name">WhatsApp</div>
-            <div class="folder-meta">Cloud-labeled chats, pairing QR auth, and the local bridge.</div>
-          </button>
-          <button class="folder-button" data-section="mcp">
-            <div class="folder-name">MCP</div>
-            <div class="folder-meta">Local endpoint, bearer token controls, and integration details.</div>
-          </button>
-        </aside>
+    <div class="workspace">
+      <aside class="panel folder-rail">
+        <div class="folder-title">Folders</div>
+        <button class="folder-button active" data-section="configuration">
+          <div class="folder-name">Configuration</div>
+          <div class="folder-meta">Proxy basics, network endpoints, and connected clients.</div>
+        </button>
+        <button class="folder-button" data-section="telegram">
+          <div class="folder-name">Telegram</div>
+          <div class="folder-meta">Cloud chats, forwarded APIs, and the upstream login flow.</div>
+        </button>
+        <button class="folder-button" data-section="whatsapp">
+          <div class="folder-name">WhatsApp</div>
+          <div class="folder-meta">Cloud-labeled chats, pairing-code auth, and the local Baileys bridge.</div>
+        </button>
+        <button class="folder-button" data-section="mcp">
+          <div class="folder-name">MCP</div>
+          <div class="folder-meta">Local MCP endpoint, hidden bearer token controls, tools, resources, and subscriptions.</div>
+        </button>
+      </aside>
 
-        <main class="section-stack">
-          <section class="panel section-panel active" data-section-panel="configuration">
-            <div class="section-head">
-              <div>
-                <h2>Configuration</h2>
-                <div class="section-copy">Operational details for the local proxy, issued sessions, and the current upstream account.</div>
-              </div>
-              <span class="badge" id="folderBadge">Cloud</span>
+      <div class="section-stack">
+        <section class="panel section-panel active" data-section-panel="configuration">
+          <div class="section-head">
+            <div>
+              <h2>Configuration</h2>
+              <div class="section-copy">Operational details for the local proxy, issued sessions, and the current upstream account.</div>
             </div>
-            <div class="section-body">
-              <div class="content-grid content-grid-halves">
-                <div class="surface-card">
-                  <div class="subsection-title">Proxy Surface</div>
-                  <div class="kv" id="configGrid"></div>
+            <span class="badge" id="folderBadge">Cloud</span>
+          </div>
+          <div class="section-body">
+            <div class="overview-grid">
+              <div class="info-card">
+                <div class="info-card-head">
+                  <div class="section-kicker">Proxy Surface</div>
+                  <h3>Local endpoints and service policy</h3>
                 </div>
-                <div class="surface-card">
-                  <div class="subsection-title">Upstream</div>
-                  <div class="kv" id="upstreamGrid"></div>
-                </div>
+                <div class="kv" id="configGrid"></div>
               </div>
-
-              <div class="content-grid content-grid-halves">
-                <div class="surface-card">
-                  <div class="subsection-title">Downstream Credentials</div>
-                  <div class="client-list" id="credentialList"></div>
+              <div class="info-card">
+                <div class="info-card-head">
+                  <div class="section-kicker">Upstream</div>
+                  <h3>Authorized Telegram account</h3>
                 </div>
-                <div class="surface-card">
-                  <div class="subsection-title">Connected Clients</div>
-                  <div class="client-list" id="clientList"></div>
-                </div>
+                <div class="kv" id="upstreamGrid"></div>
               </div>
             </div>
-          </section>
 
-          <section class="panel section-panel" data-section-panel="telegram">
-            <div class="section-head">
-              <div>
-                <h2>Telegram</h2>
-                <div class="section-copy">Inspect Cloud-folder chats, forwarded upstream APIs, and the local upstream sign-in state.</div>
-              </div>
-              <span class="badge" id="telegramBadge">Cloud access</span>
-            </div>
-            <div class="section-body">
-              <div class="telegram-shell">
-                <div class="telegram-nav">
-                  <button class="telegram-pane-button active" data-telegram-pane="chats">Chats</button>
-                  <button class="telegram-pane-button" data-telegram-pane="apis">APIs</button>
-                  <button class="telegram-pane-button" data-telegram-pane="settings">Settings</button>
+            <div class="content-block">
+              <div class="content-block-head">
+                <div>
+                  <div class="section-kicker">Issued Access</div>
+                  <h3>Downstream credentials</h3>
                 </div>
-
-                <section class="telegram-pane active" data-telegram-pane-panel="chats">
-                  <div class="surface-card auth-guide">
-                    <div class="row">
-                      <div class="title">Cloud visibility rule</div>
-                      <span class="pill">Important</span>
-                    </div>
-                    <div class="meta">
-                      Only chats placed in the special <span class="mono">Cloud</span> folder on the upstream Telegram account are exposed here and to downstream proxy clients. If a chat is missing, add it to that folder first.
-                    </div>
-                  </div>
-                  <div class="chat-shell">
-                    <div class="chat-sidebar">
-                      <div class="sidebar-heading">
-                        <div class="subsection-title">Visible chats</div>
-                        <div class="title">Cloud folder</div>
-                      </div>
-                      <div class="chat-list" id="chatList"></div>
-                    </div>
-                    <div class="chat-stage">
-                      <div class="chat-screen-head">
-                        <div class="row">
-                          <div class="title" id="messageHeading">Messages</div>
-                          <span class="pill" id="chatKindPill">chat</span>
-                        </div>
-                        <div class="chat-screen-meta" id="chatScreenMeta">Pick a Cloud chat to inspect recent history.</div>
-                      </div>
-                      <div class="message-list" id="messageList"></div>
-                    </div>
-                  </div>
-                </section>
-
-                <section class="telegram-pane" data-telegram-pane-panel="apis">
-                  <div class="content-grid content-grid-halves">
-                    <div class="surface-card">
-                      <div class="subsection-title">Forwarded upstream</div>
-                      <div class="api-list" id="forwardedApis"></div>
-                    </div>
-                    <div class="surface-card">
-                      <div class="subsection-title">Handled locally</div>
-                      <div class="api-list" id="localApis"></div>
-                    </div>
-                  </div>
-                </section>
-
-                <section class="telegram-pane" data-telegram-pane-panel="settings">
-                  <div class="settings-grid">
-                    <div class="surface-card auth-guide">
-                      <div class="row">
-                        <div class="title">Telegram app credentials</div>
-                        <span class="pill">Keychain-backed</span>
-                      </div>
-                      <div class="meta">
-                        1. Open <a href="https://my.telegram.org/auth?to=apps" target="_blank" rel="noreferrer">my.telegram.org/apps</a> and open the Telegram <span class="mono">API development tools</span> page.<br />
-                        2. Sign in with the Telegram account you want this proxy to use.<br />
-                        3. If Telegram asks you to create an app first, enter any local-only app title and short name, then continue.<br />
-                        4. Copy the <span class="mono">App api_id</span> and <span class="mono">App api_hash</span> into the fields below.<br />
-                        5. These credentials stay only on this Mac and are stored locally in Keychain. Once sign-in succeeds, the Telegram session is also saved there automatically.<br />
-                        6. Request a Telegram login code, then finish with the SMS/app code and, if your account uses it, the 2FA password.<br />
-                        7. Only chats inside the special <span class="mono">Cloud</span> folder will be visible to downstream proxy clients.
-                      </div>
-                    </div>
-
-                    <div class="surface-card" id="telegramAuthStatus"></div>
-
-                    <form class="surface-card auth-form" id="telegramCredentialForm">
-                      <div class="row">
-                        <div class="title">Save Telegram keys</div>
-                        <span class="pill">Step 1</span>
-                      </div>
-                      <label class="field">
-                        <span>API ID</span>
-                        <input id="telegramApiId" name="api_id" type="text" inputmode="numeric" autocomplete="off" />
-                      </label>
-                      <label class="field">
-                        <span>API hash</span>
-                        <input id="telegramApiHash" name="api_hash" type="password" autocomplete="off" />
-                      </label>
-                      <label class="field">
-                        <span>Phone number</span>
-                        <input id="telegramPhone" name="phone" type="text" placeholder="+15550000000" autocomplete="tel" />
-                      </label>
-                      <div class="auth-actions">
-                        <button type="button" class="secondary-button" id="requestCodeButton">Request login code</button>
-                        <button type="submit" class="primary-button">Save to Keychain</button>
-                        <button type="button" class="danger-button" id="clearKeychainButton">Clear all saved auth</button>
-                      </div>
-                    </form>
-
-                    <form class="surface-card auth-form" id="telegramCodeForm">
-                      <div class="row">
-                        <div class="title">Enter Telegram code</div>
-                        <span class="pill">Step 2</span>
-                      </div>
-                      <div class="meta">Telegram will send a login code to the phone number or active Telegram app for this account.</div>
-                      <label class="field">
-                        <span>Login code</span>
-                        <input id="telegramCode" name="code" type="text" autocomplete="one-time-code" />
-                      </label>
-                      <div class="auth-actions">
-                        <button type="submit" class="primary-button">Verify code</button>
-                      </div>
-                    </form>
-
-                    <form class="surface-card auth-form" id="telegramPasswordForm">
-                      <div class="row">
-                        <div class="title">Enter 2FA password</div>
-                        <span class="pill">Step 3</span>
-                      </div>
-                      <div class="meta">This is your Telegram two-step verification password, not the numeric login code.</div>
-                      <label class="field">
-                        <span>2FA password</span>
-                        <input id="telegramPassword" name="password" type="password" autocomplete="current-password" />
-                      </label>
-                      <div class="auth-actions">
-                        <button type="submit" class="primary-button">Finish sign-in</button>
-                      </div>
-                    </form>
-                  </div>
-                </section>
               </div>
+              <div class="client-list" id="credentialList"></div>
             </div>
-          </section>
 
-          <section class="panel section-panel" data-section-panel="whatsapp">
-            <div class="section-head">
-              <div>
-                <h2>WhatsApp</h2>
-                <div class="section-copy">Inspect Cloud-labeled chats, QR login state, and the local Baileys bridge.</div>
+            <div class="content-block">
+              <div class="content-block-head">
+                <div>
+                  <div class="section-kicker">Live Connections</div>
+                  <h3>Connected clients</h3>
+                </div>
               </div>
-              <span class="badge" id="whatsappBadge">Needs QR</span>
+              <div class="client-list" id="clientList"></div>
             </div>
-            <div class="section-body">
-              <div class="settings-grid whatsapp-grid">
-                <div class="surface-card auth-guide">
+          </div>
+        </section>
+
+        <section class="panel section-panel" data-section-panel="telegram">
+          <div class="section-head">
+            <div>
+              <h2>Telegram</h2>
+              <div class="section-copy">Inspect Cloud-folder chats, forwarded upstream APIs, and the local upstream sign-in state.</div>
+            </div>
+            <span class="badge" id="telegramBadge">Cloud access</span>
+          </div>
+          <div class="section-body">
+            <div class="telegram-shell">
+              <div class="telegram-nav">
+                <button class="telegram-pane-button active" data-telegram-pane="chats">Chats</button>
+                <button class="telegram-pane-button" data-telegram-pane="apis">APIs</button>
+                <button class="telegram-pane-button" data-telegram-pane="settings">Settings</button>
+              </div>
+
+              <section class="telegram-pane active" data-telegram-pane-panel="chats">
+                <div class="credential-card auth-guide">
                   <div class="row">
                     <div class="title">Cloud visibility rule</div>
-                    <span class="pill">Label scoped</span>
+                    <span class="pill">Important</span>
                   </div>
                   <div class="meta">
-                    Only chats carrying the special <span class="mono">Cloud</span> label inside WhatsApp are exposed here and through MCP. If a chat is missing, apply that label first.
+                    Only chats placed in the special <span class="mono">Cloud</span> folder on the upstream Telegram account are exposed here and to downstream proxy clients. If a chat is missing, add it to that folder first.
                   </div>
                 </div>
-
-                <div class="surface-card" id="whatsappAuthStatus"></div>
-
-                <form class="surface-card auth-form visible" id="whatsappPairingForm">
-                  <div class="row">
-                    <div class="title">Scan login QR</div>
-                    <span class="pill">Linked devices</span>
-                  </div>
-                  <div class="meta">
-                    Open <span class="mono">WhatsApp -> Linked devices -> Link a device</span> on your phone and scan the QR shown below. Use refresh if the code expires.
-                  </div>
-                  <div id="whatsappQrCard" class="whatsapp-qr-card"></div>
-                  <div class="auth-actions">
-                    <button type="submit" class="primary-button">Refresh QR</button>
-                    <button type="button" class="danger-button" id="whatsappLogoutButton">Clear WhatsApp session</button>
-                  </div>
-                </form>
-
-                <div class="chat-shell whatsapp-chat-shell">
+                <div class="chat-shell">
                   <div class="chat-sidebar">
                     <div class="sidebar-heading">
-                      <div class="subsection-title">Visible chats</div>
-                      <div class="title">Cloud label</div>
+                      <div class="section-kicker">Visible chats</div>
+                      <h3>Cloud folder</h3>
                     </div>
-                    <div class="chat-list" id="whatsappChatList"></div>
+                    <div class="chat-list" id="chatList"></div>
                   </div>
                   <div class="chat-stage">
                     <div class="chat-screen-head">
                       <div class="row">
-                        <div class="title" id="whatsappMessageHeading">Messages</div>
-                        <span class="pill" id="whatsappChatKindPill">chat</span>
+                        <div class="title" id="messageHeading">Messages</div>
+                        <span class="pill" id="chatKindPill">chat</span>
                       </div>
-                      <div class="chat-screen-meta" id="whatsappChatScreenMeta">Scan the QR and label chats with Cloud to inspect recent history.</div>
+                      <div class="chat-screen-meta" id="chatScreenMeta">Pick a Cloud chat to inspect recent history.</div>
                     </div>
-                    <div class="message-list" id="whatsappMessageList"></div>
+                    <div class="message-list" id="messageList"></div>
                   </div>
                 </div>
-              </div>
-            </div>
-          </section>
+              </section>
 
-          <section class="panel section-panel" data-section-panel="mcp">
-            <div class="section-head">
-              <div>
-                <h2>MCP</h2>
-                <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram resources available through it.</div>
-              </div>
-              <span class="badge">Local tools + subscriptions</span>
-            </div>
-            <div class="section-body">
-              <div class="content-grid content-grid-halves">
-                <div class="surface-card">
-                  <div class="subsection-title">Endpoint</div>
-                  <div class="kv" id="mcpGrid"></div>
+              <section class="telegram-pane" data-telegram-pane-panel="apis">
+                <div class="api-columns">
+                  <div class="info-card">
+                    <div class="info-card-head">
+                      <div class="section-kicker">Forwarded upstream</div>
+                      <h3>Methods passed through</h3>
+                    </div>
+                    <div class="api-list" id="forwardedApis"></div>
+                  </div>
+                  <div class="info-card">
+                    <div class="info-card-head">
+                      <div class="section-kicker">Handled locally</div>
+                      <h3>Proxy-owned methods</h3>
+                    </div>
+                    <div class="api-list" id="localApis"></div>
+                  </div>
                 </div>
-                <div class="surface-card" id="mcpCard"></div>
+              </section>
+
+              <section class="telegram-pane" data-telegram-pane-panel="settings">
+                <div class="settings-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">Telegram app credentials</div>
+                      <span class="pill">Keychain-backed</span>
+                    </div>
+                    <div class="meta">
+                      1. Open <a href="https://my.telegram.org/auth?to=apps" target="_blank" rel="noreferrer">my.telegram.org/apps</a> and open the Telegram <span class="mono">API development tools</span> page.<br />
+                      2. Sign in with the Telegram account you want this proxy to use.<br />
+                      3. If Telegram asks you to create an app first, enter any local-only app title and short name, then continue.<br />
+                      4. Copy the <span class="mono">App api_id</span> and <span class="mono">App api_hash</span> into the fields below.<br />
+                      5. These credentials stay only on this Mac and are stored locally in Keychain. Once sign-in succeeds, the Telegram session is also saved there automatically.<br />
+                      6. Request a Telegram login code, then finish with the SMS/app code and, if your account uses it, the 2FA password.<br />
+                      7. Only chats inside the special <span class="mono">Cloud</span> folder will be visible to downstream proxy clients.
+                    </div>
+                  </div>
+
+                  <div class="credential-card" id="telegramAuthStatus"></div>
+
+                  <form class="credential-card auth-form" id="telegramCredentialForm">
+                    <div class="row">
+                      <div class="title">Save Telegram keys</div>
+                      <span class="pill">Step 1</span>
+                    </div>
+                    <label class="field">
+                      <span>API ID</span>
+                      <input id="telegramApiId" name="api_id" type="text" inputmode="numeric" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>API hash</span>
+                      <input id="telegramApiHash" name="api_hash" type="password" autocomplete="off" />
+                    </label>
+                    <label class="field">
+                      <span>Phone number</span>
+                      <input id="telegramPhone" name="phone" type="text" placeholder="+15550000000" autocomplete="tel" />
+                    </label>
+                    <div class="auth-actions">
+                      <button type="button" class="secondary-button" id="requestCodeButton">Request login code</button>
+                      <button type="submit" class="primary-button">Save to Keychain</button>
+                      <button type="button" class="danger-button" id="clearKeychainButton">Clear all saved auth</button>
+                    </div>
+                  </form>
+
+                  <form class="credential-card auth-form" id="telegramCodeForm">
+                    <div class="row">
+                      <div class="title">Enter Telegram code</div>
+                      <span class="pill">Step 2</span>
+                    </div>
+                    <div class="meta">Telegram will send a login code to the phone number or active Telegram app for this account.</div>
+                    <label class="field">
+                      <span>Login code</span>
+                      <input id="telegramCode" name="code" type="text" autocomplete="one-time-code" />
+                    </label>
+                    <div class="auth-actions">
+                      <button type="submit" class="primary-button">Verify code</button>
+                    </div>
+                  </form>
+
+                  <form class="credential-card auth-form" id="telegramPasswordForm">
+                    <div class="row">
+                      <div class="title">Enter 2FA password</div>
+                      <span class="pill">Step 3</span>
+                    </div>
+                    <div class="meta">This is your Telegram two-step verification password, not the numeric login code.</div>
+                    <label class="field">
+                      <span>2FA password</span>
+                      <input id="telegramPassword" name="password" type="password" autocomplete="current-password" />
+                    </label>
+                    <div class="auth-actions">
+                      <button type="submit" class="primary-button">Finish sign-in</button>
+                    </div>
+                  </form>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel section-panel" data-section-panel="whatsapp">
+          <div class="section-head">
+            <div>
+              <h2>WhatsApp</h2>
+              <div class="section-copy">Inspect Cloud-labeled chats, QR login state, and the local Baileys bridge.</div>
+            </div>
+            <span class="badge" id="whatsappBadge">Needs QR</span>
+          </div>
+          <div class="section-body">
+            <div class="settings-grid whatsapp-grid">
+              <div class="credential-card auth-guide">
+                <div class="row">
+                  <div class="title">Cloud visibility rule</div>
+                  <span class="pill">Label scoped</span>
+                </div>
+                <div class="meta">
+                  Only chats carrying the special <span class="mono">Cloud</span> label inside WhatsApp are exposed here and through MCP. If a chat is missing, apply that label first.
+                </div>
+              </div>
+
+              <div class="credential-card" id="whatsappAuthStatus"></div>
+
+              <form class="credential-card auth-form visible" id="whatsappPairingForm">
+                <div class="row">
+                  <div class="title">Scan login QR</div>
+                  <span class="pill">Linked devices</span>
+                </div>
+                <div class="meta">
+                  Open <span class="mono">WhatsApp -> Linked devices -> Link a device</span> on your phone and scan the QR shown below. Use refresh if the code expires.
+                </div>
+                <div id="whatsappQrCard" class="whatsapp-qr-card"></div>
+                <div class="auth-actions">
+                  <button type="submit" class="primary-button">Refresh QR</button>
+                  <button type="button" class="danger-button" id="whatsappLogoutButton">Clear WhatsApp session</button>
+                </div>
+              </form>
+
+              <div class="chat-shell whatsapp-chat-shell">
+                <div class="chat-sidebar">
+                  <div class="sidebar-heading">
+                    <div class="section-kicker">Visible chats</div>
+                    <h3>Cloud label</h3>
+                  </div>
+                  <div class="chat-list" id="whatsappChatList"></div>
+                </div>
+                <div class="chat-stage">
+                  <div class="chat-screen-head">
+                    <div class="row">
+                      <div class="title" id="whatsappMessageHeading">Messages</div>
+                      <span class="pill" id="whatsappChatKindPill">chat</span>
+                    </div>
+                    <div class="chat-screen-meta" id="whatsappChatScreenMeta">Scan the QR and label chats with Cloud to inspect recent history.</div>
+                  </div>
+                  <div class="message-list" id="whatsappMessageList"></div>
+                </div>
               </div>
             </div>
-          </section>
-        </main>
+          </div>
+        </section>
+
+        <section class="panel section-panel" data-section-panel="mcp">
+          <div class="section-head">
+            <div>
+              <h2>MCP</h2>
+              <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram resources available through it.</div>
+            </div>
+            <span class="badge">Local tools + subscriptions</span>
+          </div>
+          <div class="section-body">
+            <div class="overview-grid">
+              <div class="info-card">
+                <div class="info-card-head">
+                  <div class="section-kicker">Endpoint</div>
+                  <h3>Connection details</h3>
+                </div>
+                <div class="kv" id="mcpGrid"></div>
+              </div>
+              <div class="info-card accent-card" id="mcpCard"></div>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </div>
