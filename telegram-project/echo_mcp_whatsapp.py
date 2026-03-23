@@ -77,6 +77,7 @@ def fetch_updates(client: McpClient, *, limit: int) -> list[dict[str, Any]]:
 
 
 def monitor_and_echo(client: McpClient, *, poll_interval: float, update_limit: int, replay_existing: bool) -> None:
+    status = client.call_tool("whatsapp.get_auth_status", {})
     payload = client.call_tool("whatsapp.list_chats", {"limit": 500})
     chats = payload.get("chats")
     if not isinstance(chats, list):
@@ -88,6 +89,12 @@ def monitor_and_echo(client: McpClient, *, poll_interval: float, update_limit: i
         kind = str(chat.get("kind") or "")
         title = str(chat.get("title") or jid)
         print(f"{jid}\t{kind}\t{title}")
+    if not chats:
+        print(
+            "No Cloud-labeled WhatsApp chats available yet "
+            f"(connected={bool(status.get('connected'))}, "
+            f"cloud_label_found={bool(status.get('cloud_label_found'))})."
+        )
     print("")
 
     seen = {update_key(update) for update in fetch_updates(client, limit=update_limit)}

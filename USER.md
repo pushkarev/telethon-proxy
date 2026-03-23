@@ -6,7 +6,7 @@ _Learn about the person you're helping. Update this as you go._
 - **What to call them:**
 - **Pronouns:** _(optional)_
 - **Timezone:**
-- **Notes:**
+- **Notes:** Prefer commits after substantial changes have been made. Prefer separate branches and worktrees per feature thread for parallel work.
 
 ## Context
 

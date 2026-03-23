@@ -17,6 +17,20 @@ class WhatsAppBridgeError(RuntimeError):
     pass
 
 
+def resolve_node_bin(explicit: str | None = None) -> str:
+    candidates = [
+        explicit,
+        os.getenv("TP_NODE_BIN"),
+        shutil.which("node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return explicit or os.getenv("TP_NODE_BIN") or "node"
+
+
 class WhatsAppBridge:
     def __init__(
         self,
@@ -32,7 +46,7 @@ class WhatsAppBridge:
         self.port = port
         self.cloud_label_name = cloud_label_name
         self.auth_dir = auth_dir
-        self.node_bin = os.getenv("TP_NODE_BIN") or node_bin or shutil.which("node") or "node"
+        self.node_bin = resolve_node_bin(node_bin)
         self.service_path = service_path or Path(__file__).resolve().parents[2] / "whatsapp-project" / "service.mjs"
         self.process: subprocess.Popen[str] | None = None
         self._started_process = False
