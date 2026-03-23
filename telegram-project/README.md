@@ -1,44 +1,35 @@
 # telegram-project
 
-Local messaging bridge for:
+This repo now ships as a single Electron app with an embedded Node backend.
+
+It exposes:
 
 - Telegram chats scoped to the `Cloud` folder
 - WhatsApp chats scoped to the `Cloud` label
-- Local Messages chats that you explicitly mark visible
-- a local MCP endpoint that exposes those tools and resources
+- local Messages chats that you explicitly mark visible
+- an authenticated MCP endpoint for downstream tools
 
 ## Setup
 
-1. Create a virtual environment:
+1. Install dependencies from the repo root:
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   npm install
    ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create the default config directory and copy the example env:
+2. Create the local config directory and copy the example env:
    ```bash
    mkdir -p ~/.tlt-proxy
-   cp .env.example ~/.tlt-proxy/.env
+   cp telegram-project/.env.example ~/.tlt-proxy/.env
    ```
 
 ## Run
 
-Start the local service:
+From the repo root:
 
 ```bash
-python proxy_service.py
+npm run app:dev
 ```
 
-Or install it as a `launchd` agent:
-
-```bash
-python proxy_service.py --install-launchd
-python proxy_service.py --launchd-status
-python proxy_service.py --uninstall-launchd
-```
+The Electron app hosts both the UI and the local backend. There is no separate Python service anymore.
 
 ## Desktop app flow
 
@@ -47,7 +38,7 @@ Use the desktop UI to complete setup:
 - `Telegram -> Settings` to save `api_id` / `api_hash`, request a login code, and authorize the upstream account
 - `WhatsApp -> Settings` to link the local bridge with a QR code
 - `Messages -> All chats` to choose which local chats should be visible through MCP
-- `MCP` to copy the local bearer token and adjust the bind interface and port
+- `MCP` to copy the local bearer token and adjust the bind protocol, interface, and port
 
 ## Scope rules
 
@@ -60,40 +51,29 @@ Use the desktop UI to complete setup:
 Default local endpoint:
 
 ```text
-http://127.0.0.1:8791/mcp
+http://127.0.0.1:8795/mcp
 ```
 
 The bearer token is managed locally and can be copied or rotated from the app.
 
-Example helper:
-
-```bash
-python list_mcp_chats.py
-```
-
-## Utility scripts
-
-- `list_chat_folders.py` lists Telegram folders and chats
-- `find_old_unfiled_messages.py` finds old Telegram messages in chats outside custom folders
-- `reply_ok_bot.py` runs a simple Bot API hook listener
-
 ## Tests
 
-Run the Python tests:
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-Run the desktop smoke test from the repo root:
+Run the smoke test from the repo root:
 
 ```bash
 npm run app:smoke
 ```
 
+Run the focused Node tests:
+
+```bash
+node --test electron/gramjs-background.test.mjs whatsapp-project/service.test.mjs
+```
+
 ## Notes
 
 - Config defaults live under `~/.tlt-proxy/`
-- On macOS, Telegram credentials and session data can be stored in Keychain
+- On macOS, Telegram credentials and session data are stored in Keychain
 - Messages history requires access to `~/Library/Messages/chat.db`, which may require Full Disk Access
+- HTTPS MCP listeners require `TP_MCP_TLS_CERT` and `TP_MCP_TLS_KEY`
 - Never commit your real env file, tokens, or session material

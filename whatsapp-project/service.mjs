@@ -132,8 +132,9 @@ function messageKind(message) {
 }
 
 export class WhatsAppBridgeService {
-  constructor({ authDir = AUTH_DIR } = {}) {
+  constructor({ authDir = AUTH_DIR, listen = true } = {}) {
     this.authDir = authDir;
+    this.listen = listen;
     this.server = null;
     this.sock = null;
     this.saveCreds = null;
@@ -163,6 +164,9 @@ export class WhatsAppBridgeService {
     await fs.mkdir(this.authDir, { recursive: true });
     await this._loadPersistedLabelState();
     await this._connect();
+    if (!this.listen) {
+      return;
+    }
     this.server = http.createServer(async (req, res) => {
       try {
         await this._handle(req, res);

@@ -131,6 +131,13 @@ function compactLastSeen(value) {
   return value ? `last ${fmtDate(value)}` : "no recent messages";
 }
 
+function formatMcpEndpoint(scheme, host, port, path) {
+  const normalizedScheme = String(scheme || "http").trim().toLowerCase() === "https" ? "https" : "http";
+  const normalizedHost = String(host || "").trim() || "127.0.0.1";
+  const normalizedPort = String(port || "").trim() || "0";
+  return `${normalizedScheme}://${normalizedHost}:${normalizedPort}${path}`;
+}
+
 function firstNonEmpty(...values) {
   for (const value of values) {
     const text = String(value ?? "").trim();
@@ -454,6 +461,7 @@ function renderOverview(data) {
     ...DEFAULT_IMESSAGE_AUTH,
     ...(data.imessage || {}),
   };
+  const mcpTlsConfigured = Boolean(data.mcp.tls_configured);
   const telegramChatCount = Array.isArray(data.chats) ? data.chats.length : 0;
   const whatsappChatCount = Array.isArray(whatsappAuth.chats) ? whatsappAuth.chats.length : 0;
   const imessageChatCount = getIMessageVisibleChats(imessageAuth).length;
@@ -487,13 +495,15 @@ function renderOverview(data) {
 
   const mcpScheme = String(data.mcp.scheme || "http").toLowerCase() === "https" ? "https" : "http";
   const mcpEndpoint = data.mcp.endpoint || `${mcpScheme}://${data.mcp.host}:${data.mcp.port}${data.mcp.path}`;
-  el("mcpGrid").innerHTML = [
-    ["Endpoint", mcpEndpoint],
-    ["Listener", data.mcp.listening ? "listening" : "offline"],
-    ["Transport", data.mcp.transport],
-    ["Auth", data.mcp.auth],
-    ["Allowed origin", data.mcp.allowed_origin],
-  ].map(([key, value]) => `<div>${esc(key)}</div><div>${esc(value)}</div>`).join("");
+  el("mcpGrid").innerHTML = `
+    <div>Live endpoint</div><div id="mcpLiveEndpoint">${esc(mcpEndpoint)}</div>
+    <div>Selected endpoint</div><div id="mcpPreviewEndpoint">${esc(mcpEndpoint)}</div>
+    <div>Listener</div><div>${esc(data.mcp.listening ? "listening" : "offline")}</div>
+    <div>Transport</div><div>${esc(data.mcp.transport)}</div>
+    <div>TLS</div><div>${esc(mcpTlsConfigured ? "configured" : "not configured")}</div>
+    <div>Auth</div><div>${esc(data.mcp.auth)}</div>
+    <div>Allowed origin</div><div>${esc(data.mcp.allowed_origin)}</div>
+  `;
 
   const bindOptions = Array.isArray(data.mcp.bind_options) ? data.mcp.bind_options : [];
   el("mcpListenerCard").innerHTML = `
@@ -506,7 +516,7 @@ function renderOverview(data) {
         <span>Protocol</span>
         <select id="mcpSchemeSelect" name="scheme">
           <option value="http"${mcpScheme === "http" ? " selected" : ""}>HTTP</option>
-          <option value="https"${mcpScheme === "https" ? " selected" : ""}>HTTPS</option>
+          <option value="https"${mcpScheme === "https" ? " selected" : ""}${!mcpTlsConfigured && mcpScheme !== "https" ? " disabled" : ""}>HTTPS${mcpTlsConfigured ? "" : " (TLS not configured)"}</option>
         </select>
       </label>
       <label class="field">
@@ -523,8 +533,13 @@ function renderOverview(data) {
         <span>Port</span>
         <input id="mcpPortInput" name="port" type="text" inputmode="numeric" value="${esc(data.mcp.port)}" autocomplete="off" />
       </label>
+      <div class="meta" id="mcpTlsHint">
+        ${mcpTlsConfigured
+          ? "HTTPS is available because MCP TLS files are configured."
+          : "HTTPS is unavailable until readable TLS files are configured through TP_MCP_TLS_CERT and TP_MCP_TLS_KEY."}
+      </div>
       <div class="meta">
-        Pick the protocol, interface, and port you want MCP to bind to. Localhost keeps it private to this Mac; the Tailscale or network interfaces make it reachable from other devices on that network. HTTPS requires the backend to have TLS files configured through <span class="mono">TP_MCP_TLS_CERT</span> and <span class="mono">TP_MCP_TLS_KEY</span>.
+        Pick the protocol, interface, and port you want MCP to bind to. Localhost keeps it private to this Mac; the Tailscale or network interfaces make it reachable from other devices on that network.
       </div>
       <div class="auth-actions">
         <button type="submit" class="primary-button" id="applyMcpConfigButton">Apply and restart MCP</button>
@@ -575,6 +590,34 @@ function renderOverview(data) {
 
   const mcpListenerForm = el("mcpListenerForm");
   if (mcpListenerForm) {
+    const syncMcpListenerPreview = () => {
+      const preview = formatMcpEndpoint(
+        el("mcpSchemeSelect")?.value,
+        el("mcpHostSelect")?.value,
+        el("mcpPortInput")?.value,
+        data.mcp.path,
+      );
+      setText("mcpPreviewEndpoint", preview);
+      const httpsBlocked = el("mcpSchemeSelect")?.value === "https" && !mcpTlsConfigured;
+      const applyButton = el("applyMcpConfigButton");
+      if (applyButton) {
+        applyButton.disabled = httpsBlocked;
+      }
+      const tlsHint = el("mcpTlsHint");
+      if (tlsHint) {
+        tlsHint.textContent = httpsBlocked
+          ? "HTTPS is unavailable until readable TLS files are configured through TP_MCP_TLS_CERT and TP_MCP_TLS_KEY."
+          : (mcpTlsConfigured
+              ? "HTTPS is available because MCP TLS files are configured."
+              : "The selected endpoint preview updates as you edit the listener settings.");
+      }
+    };
+
+    el("mcpSchemeSelect")?.addEventListener("change", syncMcpListenerPreview);
+    el("mcpHostSelect")?.addEventListener("change", syncMcpListenerPreview);
+    el("mcpPortInput")?.addEventListener("input", syncMcpListenerPreview);
+    syncMcpListenerPreview();
+
     mcpListenerForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = el("applyMcpConfigButton");
@@ -587,6 +630,7 @@ function renderOverview(data) {
         );
       } catch (error) {
         setNotice(error.message || "Could not update MCP listener settings.", "error");
+        await loadOverview().catch(() => {});
       } finally {
         button.disabled = false;
       }

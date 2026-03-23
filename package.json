@@ -2,15 +2,14 @@
   "name": "telethon-proxy-desktop",
   "private": true,
   "version": "0.1.1",
-  "description": "Desktop shell and background service packaging for the local Telethon proxy.",
+  "description": "Desktop app for the local Telegram, WhatsApp, and Messages MCP bridge.",
   "type": "module",
   "main": "electron/main.mjs",
   "productName": "Telethon Proxy",
   "scripts": {
     "app:dev": "electron .",
-    "app:bundle-python": "sh ./scripts/build-python-service.sh",
-    "app:pack": "npm run app:bundle-python && electron-builder --dir",
-    "app:dist": "npm run app:bundle-python && electron-builder",
+    "app:pack": "electron-builder --dir",
+    "app:dist": "electron-builder",
     "app:smoke": "node scripts/electron-smoke.mjs",
     "browser:run": "node scripts/playwright-runner.mjs",
     "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
@@ -27,15 +26,6 @@
       "telegram-project/webui/**/*",
       "whatsapp-project/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "dist/background",
-        "to": "background",
-        "filter": [
-          "**/*"
-        ]
-      }
     ],
     "directories": {
       "output": "dist/electron"
@@ -54,6 +44,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "playwright": "^1.58.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "telegram": "^2.26.22"
   }
 }

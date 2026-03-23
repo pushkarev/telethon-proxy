@@ -1,152 +1,32 @@
 import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, shell, clipboard } from "electron";
-import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { NativeAppBackend } from "./native-backend.mjs";
 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
-const TELEGRAM_DIR = path.join(ROOT_DIR, "telegram-project");
 const DASHBOARD_HOST = process.env.TP_DASHBOARD_HOST || "127.0.0.1";
 const DASHBOARD_PORT = Number(process.env.TP_DASHBOARD_PORT || "8788");
-const BACKGROUND_API_BASE = `http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`;
-const PYTHON_BIN = process.env.TP_PYTHON_BIN || "python3";
 const UI_ENTRY = path.join(ROOT_DIR, "telegram-project", "webui", "index.html");
 const SMOKE_MODE = process.env.TP_SMOKE === "1";
-const REQUIRED_API_PATHS = ["/api/overview", "/api/telegram/auth", "/api/mcp/token", "/api/whatsapp/auth"];
+const INTERNAL_API_BASE = "electron://app";
 
 let mainWindow = null;
-let backgroundProcess = null;
 let isQuitting = false;
-let ownsBackgroundProcess = false;
 let tray = null;
+let backendReadyPromise = null;
+const backend = new NativeAppBackend();
 
-
-function ignoreBrokenPipe(error) {
-  if (error?.code === "EPIPE" || error?.code === "ERR_STREAM_DESTROYED") {
-    return;
+async function waitForBackendReady() {
+  if (!backendReadyPromise) {
+    backendReadyPromise = (async () => {
+      await backend.start();
+    })();
   }
-  throw error;
-}
-
-function safeStreamWrite(stream, chunk) {
-  if (!stream || typeof stream.write !== "function" || stream.destroyed || stream.writableEnded) {
-    return;
-  }
-  try {
-    stream.write(chunk);
-  } catch (error) {
-    ignoreBrokenPipe(error);
-  }
-}
-
-if (process.stdout?.on) {
-  process.stdout.on("error", ignoreBrokenPipe);
-}
-
-if (process.stderr?.on) {
-  process.stderr.on("error", ignoreBrokenPipe);
-}
-
-
-function backgroundEnv() {
-  return {
-    ...process.env,
-    PYTHONUNBUFFERED: "1",
-    TP_DASHBOARD_HOST: DASHBOARD_HOST,
-    TP_DASHBOARD_PORT: String(DASHBOARD_PORT),
-    ...(app.isPackaged ? { TP_NODE_BIN: process.execPath } : {}),
-  };
-}
-
-
-function backgroundSpec() {
-  if (app.isPackaged) {
-    const executableName = process.platform === "win32" ? "telethon-proxy-service.exe" : "telethon-proxy-service";
-    const executable = path.join(process.resourcesPath, "background", "telethon-proxy-service", executableName);
-    return {
-      command: executable,
-      args: [],
-      cwd: path.dirname(executable),
-    };
-  }
-  return {
-    command: PYTHON_BIN,
-    args: ["proxy_service.py"],
-    cwd: TELEGRAM_DIR,
-  };
-}
-
-
-function startBackgroundService() {
-  if (backgroundProcess) {
-    return backgroundProcess;
-  }
-  const spec = backgroundSpec();
-  const commandLooksLikePath = spec.command.includes(path.sep) || spec.command.startsWith(".");
-  if (commandLooksLikePath && !fs.existsSync(spec.command)) {
-    throw new Error(`Background service executable not found: ${spec.command}`);
-  }
-  ownsBackgroundProcess = true;
-  backgroundProcess = spawn(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: backgroundEnv(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  backgroundProcess.stdout.on("data", (chunk) => {
-    safeStreamWrite(process.stdout, `[proxy] ${chunk}`);
-  });
-  backgroundProcess.stderr.on("data", (chunk) => {
-    safeStreamWrite(process.stderr, `[proxy] ${chunk}`);
-  });
-  backgroundProcess.on("exit", async (code, signal) => {
-    backgroundProcess = null;
-    if (isQuitting) {
-      return;
-    }
-    const detail = `Background proxy exited (${signal ? `signal ${signal}` : `code ${code}`}).`;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      await dialog.showMessageBox(mainWindow, {
-        type: "error",
-        message: "Telethon Proxy background service stopped",
-        detail,
-      });
-    }
-  });
-  return backgroundProcess;
-}
-
-
-async function waitForDashboard(timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      if (await isDashboardReady()) {
-        return;
-      }
-    } catch {
-      // Retry until the service comes up.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(`Background API did not become ready at ${BACKGROUND_API_BASE} within ${timeoutMs}ms`);
-}
-
-
-async function isDashboardReady() {
-  for (const routePath of REQUIRED_API_PATHS) {
-    try {
-      const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`));
-      if (!response.ok) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
-  }
-  return true;
+  return backendReadyPromise;
 }
 
 
@@ -155,7 +35,7 @@ async function createWindow() {
     showMainWindow();
     return mainWindow;
   }
-  await waitForDashboard();
+  await waitForBackendReady();
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 820,
@@ -307,7 +187,7 @@ function createTray() {
 }
 
 function currentBackgroundOwner() {
-  return ownsBackgroundProcess ? "app" : "external";
+  return "app";
 }
 
 async function openSystemSettingsPane(kind = "files") {
@@ -332,14 +212,12 @@ async function revealLocalPath(targetPath) {
 
 app.on("before-quit", () => {
   isQuitting = true;
-  if (backgroundProcess && ownsBackgroundProcess) {
-    backgroundProcess.kill("SIGTERM");
-  }
+  void backend.stop();
 });
 
-ipcMain.handle("proxy:api-base", () => BACKGROUND_API_BASE);
+ipcMain.handle("proxy:api-base", () => INTERNAL_API_BASE);
 ipcMain.handle("proxy:get-runtime", () => ({
-  apiBase: BACKGROUND_API_BASE,
+  apiBase: INTERNAL_API_BASE,
   backgroundOwner: currentBackgroundOwner(),
   platform: process.platform,
 }));
@@ -350,54 +228,115 @@ ipcMain.handle("proxy:copy-text", (_event, value) => {
 ipcMain.handle("proxy:open-system-settings", async (_event, kind) => openSystemSettingsPane(String(kind || "files")));
 ipcMain.handle("proxy:show-item-in-folder", async (_event, targetPath) => revealLocalPath(String(targetPath || "")));
 
-async function readJsonOrText(response) {
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { error: text || `Request failed with status ${response.status}` };
-  }
-}
-
-function formatApiError(routePath, status, payload) {
+function formatApiError(routePath, status, payload = {}) {
   if (status === 404 && String(routePath).startsWith("/api/telegram/auth")) {
-    return "Telegram Settings needs a newer background service. Restart the app or stop the older local proxy service and try again.";
+    return "Telegram Settings needs the internal app worker. Restart the app and try again.";
   }
   if (status === 404 && String(routePath).startsWith("/api/whatsapp/auth")) {
-    return "WhatsApp support needs a newer background service. Restart the app or stop the older local proxy service and try again.";
+    return "WhatsApp support needs the internal app worker. Restart the app and try again.";
   }
-  return payload.error || `Request failed with status ${status}`;
+  if (status === 404 && String(routePath).startsWith("/api/imessage/auth")) {
+    return "Messages support needs the internal app worker. Restart the app and try again.";
+  }
+  return payload?.error || `Request failed with status ${status}`;
 }
 
-ipcMain.handle("proxy:get-json", async (_event, routePath) => {
-  const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`));
-  const payload = await readJsonOrText(response);
-  if (!response.ok) {
-    throw new Error(formatApiError(routePath, response.status, payload));
+function apiError(routePath, status, error) {
+  const wrapped = new Error(formatApiError(routePath, status, { error: error?.message || String(error) }));
+  wrapped.status = status;
+  return wrapped;
+}
+
+async function backendRequest(method, params = {}, routePath = method) {
+  await waitForBackendReady();
+  try {
+    return await backend[method](...(Array.isArray(params) ? params : [params]));
+  } catch (error) {
+    throw apiError(routePath, error?.status || 500, error);
   }
-  return payload;
-});
-ipcMain.handle("proxy:post-json", async (_event, routePath, payload) => {
-  const response = await fetch(new URL(routePath, `${BACKGROUND_API_BASE}/`), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload || {}),
-  });
-  const data = await readJsonOrText(response);
-  if (!response.ok) {
-    throw new Error(formatApiError(routePath, response.status, data));
+}
+
+async function getOverviewPayload() {
+  return backend.getOverview();
+}
+
+async function getTelegramChat(peerId) {
+  return backend.getTelegramChat(peerId, 50);
+}
+
+async function handleApiGet(routePath) {
+  const url = new URL(routePath, `${INTERNAL_API_BASE}/`);
+  if (url.pathname === "/api/overview") {
+    return getOverviewPayload();
   }
-  return data;
-});
+  if (url.pathname === "/api/chat") {
+    return getTelegramChat(url.searchParams.get("peer_id") || "0");
+  }
+  if (url.pathname === "/api/telegram/auth") {
+    return backend.getTelegramAuth();
+  }
+  if (url.pathname === "/api/whatsapp/auth") {
+    return backend.getWhatsAppAuth();
+  }
+  if (url.pathname === "/api/whatsapp/chat") {
+    return backend.getWhatsAppChat(url.searchParams.get("jid") || "");
+  }
+  if (url.pathname === "/api/imessage/auth") {
+    return backend.getIMessageAuth();
+  }
+  if (url.pathname === "/api/imessage/chat") {
+    return backend.getIMessageChat(url.searchParams.get("chat_id") || "");
+  }
+  if (url.pathname === "/api/mcp/token") {
+    return backend.getMcpToken();
+  }
+  throw apiError(routePath, 404, new Error("Not Found"));
+}
+
+async function handleApiPost(routePath, payload = {}) {
+  switch (routePath) {
+    case "/api/telegram/auth/save":
+      return backend.telegramAuth.saveCredentials({
+        apiId: payload.api_id,
+        apiHash: payload.api_hash,
+        phone: payload.phone,
+      });
+    case "/api/telegram/auth/request-code":
+      return backend.telegramAuth.requestCode({ phone: payload.phone });
+    case "/api/telegram/auth/submit-code":
+      return backend.telegramAuth.submitCode({ code: payload.code });
+    case "/api/telegram/auth/submit-password":
+      return backend.telegramAuth.submitPassword({ password: payload.password });
+    case "/api/telegram/auth/clear":
+      return backend.telegramAuth.clearSavedAuth();
+    case "/api/telegram/auth/clear-session":
+      return backend.telegramAuth.clearSavedSession();
+    case "/api/whatsapp/auth/request-pairing-code":
+      return backend.whatsapp.authStatus();
+    case "/api/whatsapp/auth/logout":
+      return backend.whatsapp.logout();
+    case "/api/imessage/visible-chats":
+      return backend.setIMessageVisibility({ chatId: payload.chat_id, visible: payload.visible });
+    case "/api/imessage/enabled":
+      return backend.setIMessageEnabled(Boolean(payload.enabled));
+    case "/api/mcp/token/rotate":
+      return backend.rotateMcpToken();
+    case "/api/mcp/config":
+      return backend.setMcpConfig({ host: payload.host, port: payload.port, scheme: payload.scheme });
+    default:
+      throw apiError(routePath, 404, new Error("Not Found"));
+  }
+}
+
+ipcMain.handle("proxy:get-json", async (_event, routePath) => handleApiGet(String(routePath || "")));
+ipcMain.handle("proxy:post-json", async (_event, routePath, payload) => handleApiPost(String(routePath || ""), payload || {}));
 
 app.whenReady().then(async () => {
   if (process.platform === "darwin" && !SMOKE_MODE) {
     app.setActivationPolicy("accessory");
   }
   createTray();
-  if (!(await isDashboardReady())) {
-    startBackgroundService();
-  }
+  await waitForBackendReady();
   await createWindow();
   updateTrayMenu();
   app.on("activate", async () => {
