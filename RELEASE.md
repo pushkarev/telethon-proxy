@@ -40,6 +40,7 @@ This uses:
 - `electron-builder` from `package.json`
 - `electron/notarize.mjs` as the `afterSign` hook
 - `Developer ID Application` signing from `package.json`
+- explicit Apple TSA URL `http://timestamp.apple.com/ts01`
 
 Artifacts are written to:
 

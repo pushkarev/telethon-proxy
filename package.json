@@ -37,6 +37,7 @@
     "mac": {
       "icon": "electron/assets/aardvark.icns",
       "identity": "Developer ID Application",
+      "timestamp": "http://timestamp.apple.com/ts01",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "electron/entitlements.mac.plist",
