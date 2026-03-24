@@ -25,6 +25,10 @@
     "appId": "dev.telethon.proxy",
     "productName": "Aardvark",
     "afterSign": "electron/notarize.mjs",
+    "electronLanguages": [
+      "en",
+      "ru"
+    ],
     "files": [
       "electron/**/*",
       "telegram-project/webui/**/*",
