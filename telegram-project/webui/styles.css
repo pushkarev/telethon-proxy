@@ -90,6 +90,27 @@ a {
   gap: 16px;
 }
 
+.hero-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.hero-brand-icon {
+  width: 76px;
+  height: 76px;
+  border-radius: 24px;
+  box-shadow: 0 18px 30px rgba(66, 44, 25, 0.16);
+  flex: 0 0 auto;
+}
+
+.hero-copy {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .eyebrow,
 .section-kicker,
 .stat-label,
@@ -127,7 +148,6 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  justify-content: flex-end;
 }
 
 .hero-pill {
@@ -140,6 +160,48 @@ h1 {
   color: var(--ink);
   font-size: 12px;
   letter-spacing: 0.03em;
+}
+
+.hero-side-panel {
+  width: min(100%, 360px);
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(24, 32, 43, 0.08);
+  background: linear-gradient(180deg, rgba(255, 252, 246, 0.92), rgba(246, 239, 226, 0.92));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.hero-side-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.hero-side-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+  padding: 4px;
+  border: 1px solid rgba(24, 32, 43, 0.08);
+}
+
+.hero-side-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.hero-toggle {
+  margin-top: 12px;
+}
+
+.hero-side-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .hero-stats {
@@ -398,6 +460,7 @@ h1 {
 .telegram-pane-button,
 .whatsapp-pane-button,
 .imessage-pane-button,
+.filesystem-pane-button,
 .primary-button,
 .secondary-button,
 .danger-button {
@@ -412,6 +475,7 @@ h1 {
 .telegram-pane-button:disabled,
 .whatsapp-pane-button:disabled,
 .imessage-pane-button:disabled,
+.filesystem-pane-button:disabled,
 .primary-button:disabled,
 .secondary-button:disabled,
 .danger-button:disabled {
@@ -423,7 +487,8 @@ h1 {
 
 .telegram-pane-button,
 .whatsapp-pane-button,
-.imessage-pane-button {
+.imessage-pane-button,
+.filesystem-pane-button {
   background: transparent;
   color: var(--muted);
   border-color: transparent;
@@ -433,6 +498,7 @@ h1 {
 .telegram-pane-button:hover,
 .whatsapp-pane-button:hover,
 .imessage-pane-button:hover,
+.filesystem-pane-button:hover,
 .primary-button:hover,
 .secondary-button:hover,
 .danger-button:hover {
@@ -441,7 +507,8 @@ h1 {
 
 .telegram-pane-button.active,
 .whatsapp-pane-button.active,
-.imessage-pane-button.active {
+.imessage-pane-button.active,
+.filesystem-pane-button.active {
   background: rgba(255, 255, 255, 0.88);
   border-color: rgba(175, 99, 66, 0.18);
   color: var(--ink);
@@ -450,13 +517,15 @@ h1 {
 
 .telegram-pane,
 .whatsapp-pane,
-.imessage-pane {
+.imessage-pane,
+.filesystem-pane {
   display: none;
 }
 
 .telegram-pane.active,
 .whatsapp-pane.active,
-.imessage-pane.active {
+.imessage-pane.active,
+.filesystem-pane.active {
   display: block;
 }
 
@@ -622,6 +691,37 @@ h1 {
   align-items: start;
 }
 
+.filesystem-grid {
+  grid-template-columns: 1fr;
+}
+
+.filesystem-card {
+  min-width: 0;
+}
+
+.filesystem-entry-row {
+  align-items: flex-start;
+}
+
+.filesystem-entry-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.filesystem-entry-title {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.filesystem-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .auth-guide {
   grid-column: 1 / -1;
   background:
@@ -674,6 +774,15 @@ h1 {
 }
 
 .whatsapp-qr svg {
+  width: min(100%, 280px);
+  height: auto;
+  background: white;
+  border-radius: 16px;
+  padding: 10px;
+  box-shadow: 0 12px 28px rgba(24, 32, 43, 0.12);
+}
+
+.whatsapp-qr-image {
   width: min(100%, 280px);
   height: auto;
   background: white;
@@ -759,6 +868,11 @@ h1 {
 .toggle-row input:focus-visible + .toggle-box {
   outline: 2px solid rgba(54, 101, 166, 0.22);
   outline-offset: 2px;
+}
+
+.toggle-row.is-disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .field input {
@@ -1122,6 +1236,14 @@ h1 {
 
   .hero-head {
     flex-direction: column;
+  }
+
+  .hero-brand {
+    width: 100%;
+  }
+
+  .hero-side-panel {
+    width: 100%;
   }
 
   .hero-ribbon {

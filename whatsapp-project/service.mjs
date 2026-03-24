@@ -30,6 +30,7 @@ const MAX_UPDATES = 500;
 const RECONNECT_DELAY_MS = 2_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 25_000;
+const INITIAL_QR_WAIT_MS = 20_000;
 const HISTORY_FETCH_TIMEOUT_MS = 7_000;
 const STATE_FLUSH_DELAY_MS = 250;
 const HISTORY_ANCHOR_COLLECTIONS = ["regular", "regular_high", "regular_low"];
@@ -167,6 +168,17 @@ function extractText(message) {
   );
 }
 
+function normalizedMessageText(message, kind) {
+  const text = extractText(message);
+  if (text != null && text !== "") {
+    return text;
+  }
+  if (!kind || kind === "unknown") {
+    return "[Unsupported WhatsApp message]";
+  }
+  return `[Unsupported WhatsApp message: ${kind}]`;
+}
+
 function messageKind(message) {
   const body = message?.message;
   if (!body) {
@@ -190,6 +202,7 @@ export class WhatsAppBridgeService {
     this.qrRaw = null;
     this.qrAscii = null;
     this.qrSvg = null;
+    this.qrDataUrl = null;
     this.lastError = null;
     this.me = null;
     this.startedAt = nowIso();
@@ -208,6 +221,7 @@ export class WhatsAppBridgeService {
     this.connectWatchdogTimer = null;
     this.reconnectAttempts = 0;
     this.historyAnchorRefreshPromise = null;
+    this.statusWaiters = new Set();
   }
 
   async start() {
@@ -283,6 +297,7 @@ export class WhatsAppBridgeService {
     this.connection = "connecting";
     this.connected = false;
     this.lastError = null;
+    this._notifyStatusWaiters();
     this._armConnectWatchdog(sock);
     await this._seedChatsFromPersistedMappings(sock.authState?.creds);
 
@@ -313,15 +328,23 @@ export class WhatsAppBridgeService {
       try {
         this.qrAscii = await QRCode.toString(update.qr, { type: "terminal", small: true });
         this.qrSvg = await QRCode.toString(update.qr, { type: "svg" });
+        this.qrDataUrl = await QRCode.toDataURL(update.qr, {
+          errorCorrectionLevel: "M",
+          margin: 1,
+          width: 320,
+        });
       } catch (error) {
         this.qrAscii = null;
         this.qrSvg = null;
+        this.qrDataUrl = null;
         this.lastError = error?.message || String(error);
       }
+      this._notifyStatusWaiters();
     }
     if (update.connection) {
       this.connection = update.connection;
       this.connected = update.connection === "open";
+      this._notifyStatusWaiters();
     }
     if (update.connection === "open") {
       this._clearConnectWatchdog();
@@ -338,6 +361,7 @@ export class WhatsAppBridgeService {
       this.qrRaw = null;
       this.qrAscii = null;
       this.qrSvg = null;
+      this.qrDataUrl = null;
       this.lastError = null;
       try {
         // Labels must be validated from the current live session. Persisted state is
@@ -353,6 +377,7 @@ export class WhatsAppBridgeService {
       }
       await this._savePersistedLabelState();
       await this._seedChatsFromPersistedMappings(sock.authState?.creds);
+      this._notifyStatusWaiters();
       return;
     }
     if (update.connection === "close") {
@@ -371,8 +396,45 @@ export class WhatsAppBridgeService {
         return;
       }
       this.lastError = update.lastDisconnect?.error?.message || "WhatsApp connection closed.";
+      this._notifyStatusWaiters();
       this._scheduleReconnect();
     }
+  }
+
+  _notifyStatusWaiters() {
+    if (!this.statusWaiters.size) {
+      return;
+    }
+    for (const waiter of [...this.statusWaiters]) {
+      try {
+        if (!waiter.predicate()) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      this.statusWaiters.delete(waiter);
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+  }
+
+  async _waitForStatus(predicate, timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => {
+      const waiter = {
+        predicate,
+        resolve: () => resolve(),
+        timer: null,
+      };
+      waiter.timer = setTimeout(() => {
+        this.statusWaiters.delete(waiter);
+        resolve();
+      }, Math.max(0, Number(timeoutMs || 0) || 0));
+      this.statusWaiters.add(waiter);
+    });
   }
 
   _cancelReconnectTimer() {
@@ -1128,13 +1190,15 @@ export class WhatsAppBridgeService {
   }
 
   _serializeMessage(message) {
+    const kind = messageKind(message);
     return {
       id: message.key?.id || null,
       chat_id: message.key?.remoteJid || null,
       participant: message.key?.participant || null,
       from_me: Boolean(message.key?.fromMe),
-      text: extractText(message),
-      kind: messageKind(message),
+      text: normalizedMessageText(message, kind),
+      kind,
+      message_type: kind,
       date: timestampToIso(message.messageTimestamp),
       status: message.status ?? null,
     };
@@ -1366,6 +1430,7 @@ export class WhatsAppBridgeService {
       qr_raw: this.qrRaw,
       qr_ascii: this.qrAscii,
       qr_svg: this.qrSvg,
+      qr_png_data_url: this.qrDataUrl,
       cloud_label_name: CLOUD_LABEL_NAME,
       cloud_label_found: Boolean(cloudLabel),
       cloud_label: cloudLabel,
@@ -1379,11 +1444,39 @@ export class WhatsAppBridgeService {
     };
   }
 
-  async authStatus() {
+  async authStatus({ waitForQr = false, timeoutMs = INITIAL_QR_WAIT_MS } = {}) {
     if (!this.sock) {
       await this._connect();
     }
+    const shouldWaitForQr = Boolean(waitForQr)
+      || (!this.registered && !this.connected && !this.qrRaw && !this.lastError && this.connection === "connecting");
+    if (shouldWaitForQr) {
+      await this._waitForStatus(
+        () => Boolean(this.qrRaw || this.connected || this.lastError || this.registered || this.connection === "close"),
+        timeoutMs,
+      );
+    }
     return this._status();
+  }
+
+  async requestPairingCode({ timeoutMs = INITIAL_QR_WAIT_MS } = {}) {
+    let status = await this.authStatus({ waitForQr: true, timeoutMs });
+    if (status.qr_available || status.connected) {
+      return status;
+    }
+    await this._connect();
+    status = await this.authStatus({ waitForQr: true, timeoutMs });
+    return status;
+  }
+
+  async getUpdates(limit = 50) {
+    const normalizedLimit = Math.max(Number(limit || 0) || 0, 0);
+    return {
+      ok: true,
+      updates: this.recentUpdates
+        .filter((update) => this._isAllowedChat(update.chat_id))
+        .slice(-normalizedLimit),
+    };
   }
 
   async logout() {
@@ -1403,6 +1496,7 @@ export class WhatsAppBridgeService {
     this.qrRaw = null;
     this.qrAscii = null;
     this.qrSvg = null;
+    this.qrDataUrl = null;
     this.lastError = null;
     this.labelStateValidated = false;
     this.contacts.clear();
@@ -1413,6 +1507,7 @@ export class WhatsAppBridgeService {
     this.recentUpdates = [];
     await fs.rm(this._bridgeStatePath(), { force: true });
     await this._connect();
+    this._notifyStatusWaiters();
     return this._status();
   }
 

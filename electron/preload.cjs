@@ -23,4 +23,13 @@ contextBridge.exposeInMainWorld("telethonProxy", {
   showItemInFolder(targetPath) {
     return ipcRenderer.invoke("proxy:show-item-in-folder", String(targetPath || ""));
   },
+  pickDirectory() {
+    return ipcRenderer.invoke("proxy:pick-directory");
+  },
+  setLaunchOnStart(enabled) {
+    return ipcRenderer.invoke("proxy:set-launch-on-start", Boolean(enabled));
+  },
+  hideWindow() {
+    return ipcRenderer.invoke("proxy:hide-window");
+  },
 });

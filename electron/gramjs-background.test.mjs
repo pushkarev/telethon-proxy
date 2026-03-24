@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { Api } from "telegram";
-import { dialogMatchesFilter, serializeDate } from "./gramjs-background.mjs";
+import { GramJsTelegramBridge, dialogMatchesFilter, serializeDate } from "./gramjs-background.mjs";
 
 
 function makeDialog({
@@ -65,4 +65,15 @@ test("dialogMatchesFilter respects group filters", () => {
 
 test("serializeDate converts unix seconds from GramJS", () => {
   assert.equal(serializeDate(1774266607), "2026-03-23T11:50:07.000Z");
+});
+
+test("telegram bridge cache can be invalidated after writes", () => {
+  const bridge = new GramJsTelegramBridge();
+  bridge.cachedDialogs = [{ title: "cached" }];
+  bridge.cachedAt = Date.now();
+
+  bridge.invalidateCache();
+
+  assert.deepEqual(bridge.cachedDialogs, []);
+  assert.equal(bridge.cachedAt, 0);
 });

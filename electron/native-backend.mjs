@@ -10,6 +10,8 @@ import { promisify } from "node:util";
 import { Api, TelegramClient, utils } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 
+import { NativeFilesystemBridge } from "./filesystem-bridge.mjs";
+import { NativePreviewCache } from "./preview-cache.mjs";
 import { GramJsTelegramBridge } from "./gramjs-background.mjs";
 import { WhatsAppBridgeService } from "../whatsapp-project/service.mjs";
 
@@ -24,6 +26,7 @@ const UPSTREAM_API_HASH_ACCOUNT = "upstream_api_hash";
 const UPSTREAM_PHONE_ACCOUNT = "upstream_phone";
 const UPSTREAM_SESSION_ACCOUNT = "upstream_session";
 const MCP_TOKEN_ACCOUNT = "mcp_token";
+const PREVIEW_CACHE_KEY_ACCOUNT = "preview_cache_key";
 const APPLE_EPOCH_OFFSET = 978307200;
 const FIELD_SEPARATOR = "\t";
 const LIST_SEPARATOR = "\x1f";
@@ -167,6 +170,20 @@ function appleMessageDateToIso(value) {
 
 function sqlQuote(value) {
   return `'${String(value ?? "").replaceAll("'", "''")}'`;
+}
+
+function telegramErrorText(error) {
+  return [
+    error?.errorMessage,
+    error?.message,
+    error?.name,
+    error?.constructor?.name,
+  ].filter(Boolean).join(" ");
+}
+
+export function telegramErrorRequestsPassword(error) {
+  const message = telegramErrorText(error).toUpperCase();
+  return message.includes("SESSION_PASSWORD_NEEDED") || message.includes("SESSIONPASSWORDNEEDED");
 }
 
 function decodeAttributedBody(hexString) {
@@ -330,8 +347,16 @@ class NativeSecretStore {
     return this.get(MCP_TOKEN_ACCOUNT) || "";
   }
 
+  loadPreviewCacheKey() {
+    return this.get(PREVIEW_CACHE_KEY_ACCOUNT) || "";
+  }
+
   saveMcpToken(token) {
     this.set(MCP_TOKEN_ACCOUNT, token);
+  }
+
+  savePreviewCacheKey(key) {
+    this.set(PREVIEW_CACHE_KEY_ACCOUNT, key);
   }
 
   loadOrCreateMcpToken({ envToken = "", legacyPath = "" } = {}) {
@@ -364,6 +389,23 @@ class NativeSecretStore {
     this.saveMcpToken(token);
     return token;
   }
+
+  loadOrCreatePreviewCacheKey({ envKey = "" } = {}) {
+    const cleanEnvKey = String(envKey || "").trim();
+    if (cleanEnvKey) {
+      return { key: cleanEnvKey, envManaged: true };
+    }
+    const existing = this.loadPreviewCacheKey();
+    if (existing) {
+      return { key: existing, envManaged: false };
+    }
+    if (!this.isAvailable) {
+      return { key: "", envManaged: false };
+    }
+    const key = randomBytes(32).toString("base64");
+    this.savePreviewCacheKey(key);
+    return { key, envManaged: false };
+  }
 }
 
 class NativeConfig {
@@ -371,6 +413,8 @@ class NativeConfig {
     loadProjectEnv();
     const home = ensureDir(DEFAULT_CONFIG_HOME);
     const mcpSettingsPath = path.resolve(process.env.TP_MCP_SETTINGS || path.join(home, "mcp_settings.json"));
+    const filesystemSettingsPath = path.resolve(process.env.TP_FILESYSTEM_SETTINGS || path.join(home, "filesystem_settings.json"));
+    const previewCachePath = path.resolve(process.env.TP_PREVIEW_CACHE_DB || path.join(home, "preview_cache.sqlite"));
     const imessageSettingsPath = path.resolve(process.env.TP_IMESSAGE_SETTINGS || path.join(home, "imessage_settings.json"));
     const imessageVisibleChatsPath = path.resolve(process.env.TP_IMESSAGE_VISIBLE_CHATS || path.join(home, "imessage_visible_chats.json"));
     const mcpSaved = NativeConfig.loadJsonObject(mcpSettingsPath);
@@ -379,6 +423,9 @@ class NativeConfig {
     const { token, envManaged } = secretStore.loadOrCreateMcpToken({
       envToken: process.env.TP_MCP_TOKEN || "",
       legacyPath: path.join(home, "mcp_token"),
+    });
+    const { key: previewCacheKey } = secretStore.loadOrCreatePreviewCacheKey({
+      envKey: process.env.TP_PREVIEW_CACHE_KEY || "",
     });
     let mcpScheme = String(process.env.TP_MCP_SCHEME || mcpSaved.scheme || "http").trim().toLowerCase() || "http";
     if (!["http", "https"].includes(mcpScheme)) mcpScheme = "http";
@@ -393,6 +440,9 @@ class NativeConfig {
       mcpTokenEnvManaged: envManaged,
       mcpTlsCertName: process.env.TP_MCP_TLS_CERT || "",
       mcpTlsKeyName: process.env.TP_MCP_TLS_KEY || "",
+      filesystemSettingsName: filesystemSettingsPath,
+      previewCacheDbName: previewCachePath,
+      previewCacheKey,
       upstreamApiId: Number(savedSecrets.apiId || process.env.TG_API_ID || 0),
       upstreamApiHash: savedSecrets.apiHash || process.env.TG_API_HASH || "",
       upstreamPhone: process.env.TG_PHONE || savedSecrets.phone || "",
@@ -488,13 +538,14 @@ class NativeConfig {
   }
 }
 
-class TelegramAuthManager {
+export class TelegramAuthManager {
   constructor(config, secretStore, telegramBridge) {
     this.config = config;
     this.secretStore = secretStore;
     this.telegramBridge = telegramBridge;
     this.pending = null;
     this.needsPassword = false;
+    this.passwordHint = null;
     this.lastError = "";
   }
 
@@ -506,6 +557,7 @@ class TelegramAuthManager {
     }
     this.pending = null;
     this.needsPassword = false;
+    this.passwordHint = null;
   }
 
   getStatus() {
@@ -524,6 +576,7 @@ class TelegramAuthManager {
       saved_phone: hasSession ? saved?.phone || null : null,
       next_step: nextStep,
       pending_phone: this.pending?.phone || null,
+      password_hint: this.needsPassword ? this.passwordHint : null,
       last_error: this.lastError || null,
     };
   }
@@ -546,6 +599,7 @@ class TelegramAuthManager {
     this.config.upstreamPhone = normalizedPhone;
     this.config.upstreamSessionString = "";
     this.lastError = "";
+    this.passwordHint = null;
     await this.close();
     await this.telegramBridge.stop();
     return this.getStatus();
@@ -564,6 +618,7 @@ class TelegramAuthManager {
     const sent = await client.sendCode({ apiId, apiHash }, resolvedPhone);
     this.pending = { client, apiId, apiHash, phone: resolvedPhone, phoneCodeHash: sent.phoneCodeHash };
     this.needsPassword = false;
+    this.passwordHint = null;
     this.lastError = "";
     this.secretStore.saveUpstreamCredentials({ apiId: String(apiId), apiHash, phone: resolvedPhone });
     this.config.upstreamPhone = resolvedPhone;
@@ -579,6 +634,7 @@ class TelegramAuthManager {
     this.config.upstreamApiHash = "";
     this.config.upstreamPhone = "";
     this.lastError = "";
+    this.passwordHint = null;
     await this.telegramBridge.stop();
     return this.getStatus();
   }
@@ -588,23 +644,24 @@ class TelegramAuthManager {
     this.secretStore.clearUpstreamSession();
     this.config.upstreamSessionString = "";
     this.lastError = "";
+    this.passwordHint = null;
     await this.telegramBridge.stop();
     return this.getStatus();
   }
 
   async submitCode({ code }) {
     if (!this.pending) throw new Error("Request a Telegram login code first");
+    const normalizedCode = String(code || "").trim();
+    if (!normalizedCode) throw new Error("Telegram login code is required");
     try {
       await this.pending.client.invoke(new Api.auth.SignIn({
         phoneNumber: this.pending.phone,
         phoneCodeHash: this.pending.phoneCodeHash,
-        phoneCode: String(code || "").trim(),
+        phoneCode: normalizedCode,
       }));
     } catch (error) {
-      if (String(error?.errorMessage || error?.message || "").includes("SESSION_PASSWORD_NEEDED")) {
-        this.needsPassword = true;
-        this.lastError = "";
-        return this.getStatus();
+      if (telegramErrorRequestsPassword(error)) {
+        return this.#markNeedsPassword();
       }
       throw error;
     }
@@ -613,17 +670,49 @@ class TelegramAuthManager {
 
   async submitPassword({ password }) {
     if (!this.pending) throw new Error("Request a Telegram login code first");
-    await this.pending.client.signInWithPassword(
-      { apiId: this.pending.apiId, apiHash: this.pending.apiHash },
-      {
-        password: async () => String(password || ""),
-        onError: async (error) => {
-          this.lastError = error?.message || String(error);
-          return true;
+    const normalizedPassword = String(password || "");
+    if (!normalizedPassword.trim()) {
+      this.needsPassword = true;
+      this.lastError = "Telegram 2FA password is required.";
+      return this.getStatus();
+    }
+    try {
+      await this.pending.client.signInWithPassword(
+        { apiId: this.pending.apiId, apiHash: this.pending.apiHash },
+        {
+          password: async () => normalizedPassword,
+          onError: async (error) => {
+            this.lastError = error?.errorMessage || error?.message || String(error);
+            return true;
+          },
         },
-      },
-    );
+      );
+    } catch (error) {
+      if (String(error?.message || error) === "AUTH_USER_CANCEL") {
+        this.needsPassword = true;
+        return this.getStatus();
+      }
+      throw error;
+    }
     return this.#completeLogin();
+  }
+
+  async #markNeedsPassword() {
+    this.needsPassword = true;
+    this.lastError = "";
+    this.passwordHint = await this.#loadPasswordHint();
+    return this.getStatus();
+  }
+
+  async #loadPasswordHint() {
+    if (!this.pending?.client) return null;
+    try {
+      const passwordState = await this.pending.client.invoke(new Api.account.GetPassword());
+      const hint = typeof passwordState?.hint === "string" ? passwordState.hint.trim() : "";
+      return hint || null;
+    } catch {
+      return null;
+    }
   }
 
   async #completeLogin() {
@@ -641,6 +730,7 @@ class TelegramAuthManager {
     await pending.client.disconnect();
     this.pending = null;
     this.needsPassword = false;
+    this.passwordHint = null;
     this.lastError = "";
     await this.telegramBridge.stop();
     const status = this.getStatus();
@@ -1179,7 +1269,7 @@ class NativeMcpServer {
               resources: { listChanged: false, subscribe: true },
             },
             serverInfo: { name: "telethon-proxy-mcp", version: "0.2.0" },
-            instructions: "Cloud-scoped Telegram access, WhatsApp chats carrying the Cloud label, and local Messages chats allowed through the desktop app.",
+            instructions: "Cloud-scoped Telegram access, WhatsApp chats carrying the Cloud label, local Messages chats allowed through the desktop app, and shared local filesystem access. File previews are supported only for text files, PDF, Word (.doc/.docx), Excel (.xlsx), and PowerPoint (.pptx), and previews may be incomplete; clients should prefer binary downloads when they need the complete original file.",
           },
         };
         this.#writeJson(res, 200, response, { "Mcp-Session-Id": sessionId });
@@ -1203,7 +1293,7 @@ class NativeMcpServer {
     const params = request.params && typeof request.params === "object" ? request.params : {};
     try {
       if (method === "ping") return { jsonrpc: "2.0", id, result: {} };
-      if (method === "tools/list") return { jsonrpc: "2.0", id, result: { tools: this.backend.mcpTools() } };
+      if (method === "tools/list") return { jsonrpc: "2.0", id, result: { tools: await this.backend.mcpTools() } };
       if (method === "tools/call") return { jsonrpc: "2.0", id, result: await this.backend.mcpCallTool(params) };
       if (method === "resources/list") return { jsonrpc: "2.0", id, result: { resources: await this.backend.mcpResources() } };
       if (method === "resources/read") return { jsonrpc: "2.0", id, result: await this.backend.mcpReadResource(params) };
@@ -1253,6 +1343,14 @@ export class NativeAppBackend {
   constructor() {
     this.secretStore = new NativeSecretStore();
     this.config = NativeConfig.create(this.secretStore);
+    this.previewCache = new NativePreviewCache({
+      dbPath: this.config.previewCacheDbName,
+      encryptionKey: this.config.previewCacheKey,
+    });
+    this.filesystem = new NativeFilesystemBridge({
+      settingsPath: this.config.filesystemSettingsName,
+      previewCache: this.previewCache,
+    });
     this.telegramBridge = new GramJsTelegramBridge({ folderName: this.config.cloudFolderName });
     this.telegramAuth = new TelegramAuthManager(this.config, this.secretStore, this.telegramBridge);
     this.whatsapp = new WhatsAppBridgeService({
@@ -1286,11 +1384,13 @@ export class NativeAppBackend {
     await this.mcp.stop();
     await this.whatsapp.stop();
     await this.imessage.stop();
+    this.previewCache.close();
   }
 
   async getCoreOverview() {
     const whatsapp = await this.getWhatsAppAuth();
     const imessage = await this.getIMessageAuth();
+    const filesystem = await this.getFilesystemStatus();
     return {
       generated_at: nowIso(),
       error: null,
@@ -1321,6 +1421,7 @@ export class NativeAppBackend {
         tls_configured: this.config.mcpTlsConfigured(),
         bind_options: await this.getMcpBindOptions(),
       },
+      filesystem,
       telegram_auth: this.getTelegramAuth(),
       whatsapp,
       imessage,
@@ -1351,7 +1452,7 @@ export class NativeAppBackend {
 
   async getWhatsAppAuth() {
     try {
-      const payload = await this.whatsapp.authStatus();
+      const payload = await this.whatsapp.authStatus({ waitForQr: true, timeoutMs: 1_500 });
       payload.available = true;
       return payload;
     } catch (error) {
@@ -1367,14 +1468,15 @@ export class NativeAppBackend {
     }
   }
 
-  async getWhatsAppChat(jid) {
+  async getWhatsAppChat(jid, limit = 50) {
     try {
-      await this.whatsapp.ensureChatHistory(jid, 80);
+      const normalizedLimit = Math.max(1, Number(limit || 50) || 50);
+      await this.whatsapp.ensureChatHistory(jid, normalizedLimit);
       const chats = (await this.whatsapp.authStatus()).chats || [];
       return {
         ok: true,
         chat: chats.find((chat) => chat.jid === jid) || null,
-        messages: this.whatsapp._chatMessages(jid, 80),
+        messages: this.whatsapp._chatMessages(jid, normalizedLimit),
       };
     } catch (error) {
       return { chat: null, messages: [], error: error.message || String(error) };
@@ -1391,6 +1493,9 @@ export class NativeAppBackend {
         has_session: false,
         messages_app_accessible: this.config.imessageMessagesAppAccessible,
         database_accessible: this.config.imessageDatabaseAccessible,
+        history_readable: false,
+        send_capable: false,
+        updates_capable: false,
         messages_app_error: null,
         database_error: null,
         automation_hint: "Enabling Messages will prompt macOS for Messages control access and may require Full Disk Access for chat history.",
@@ -1408,6 +1513,9 @@ export class NativeAppBackend {
     this.config.imessageDatabaseAccessible = Boolean(payload.database_accessible);
     this.config.saveIMessageSettings();
     payload.enabled = true;
+    payload.history_readable = Boolean(payload.database_accessible);
+    payload.send_capable = Boolean(payload.messages_app_accessible && payload.connected);
+    payload.updates_capable = Boolean(payload.database_accessible);
     return payload;
   }
 
@@ -1431,6 +1539,36 @@ export class NativeAppBackend {
     const result = await this.getIMessageAuth();
     result.message = enabled ? "Messages integration enabled." : "Messages integration disabled.";
     return result;
+  }
+
+  async getFilesystemStatus() {
+    try {
+      return {
+        ...(await this.filesystem.getStatus()),
+        last_error: null,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        available: false,
+        read_only: true,
+        directories: [],
+        accessible_directories: [],
+        last_error: error.message || String(error),
+      };
+    }
+  }
+
+  async addFilesystemDirectory(dirPath) {
+    return this.filesystem.addDirectory(dirPath);
+  }
+
+  async setFilesystemDirectoryEnabled(dirPath, enabled) {
+    return this.filesystem.setDirectoryEnabled(dirPath, enabled);
+  }
+
+  async removeFilesystemDirectory(dirPath) {
+    return this.filesystem.removeDirectory(dirPath);
   }
 
   getMcpToken() {
@@ -1550,6 +1688,7 @@ export class NativeAppBackend {
       { name: "imessage.get_messages", inputSchema: { type: "object", properties: { chat_id: { type: "string" }, limit: { type: "integer" } }, required: ["chat_id"] } },
       { name: "imessage.send_message", inputSchema: { type: "object", properties: { chat_id: { type: "string" }, text: { type: "string" } }, required: ["chat_id", "text"] } },
       { name: "imessage.get_updates", inputSchema: { type: "object", properties: { limit: { type: "integer" } } } },
+      ...(await this.filesystem.mcpTools()),
     ];
   }
 
@@ -1567,7 +1706,7 @@ export class NativeAppBackend {
     else if (name === "telegram.get_updates") payload = { ok: true, updates: [] };
     else if (name === "whatsapp.list_chats") payload = { ok: true, chats: (await this.whatsapp.authStatus()).chats.slice(0, Number(arguments_.limit || 100)) };
     else if (name === "whatsapp.get_auth_status") payload = await this.getWhatsAppAuth();
-    else if (name === "whatsapp.get_messages") payload = await this.getWhatsAppChat(String(arguments_.jid || ""));
+    else if (name === "whatsapp.get_messages") payload = await this.getWhatsAppChat(String(arguments_.jid || ""), Number(arguments_.limit || 50));
     else if (name === "whatsapp.send_message") payload = await this.whatsapp.sendMessage(String(arguments_.jid || ""), String(arguments_.text || ""));
     else if (name === "whatsapp.mark_read") payload = await this.whatsapp.markRead(String(arguments_.jid || ""), arguments_.message_id ? String(arguments_.message_id) : null);
     else if (name === "whatsapp.get_updates") payload = await this.whatsapp.getUpdates(Number(arguments_.limit || 50));
@@ -1576,6 +1715,7 @@ export class NativeAppBackend {
     else if (name === "imessage.get_messages") payload = await this.imessage.getChat(String(arguments_.chat_id || ""), Number(arguments_.limit || 50), true);
     else if (name === "imessage.send_message") payload = await this.imessage.sendMessage(String(arguments_.chat_id || ""), String(arguments_.text || ""));
     else if (name === "imessage.get_updates") payload = await this.imessage.getUpdates(Number(arguments_.limit || 50));
+    else if (name.startsWith("filesystem.")) payload = await this.filesystem.mcpCallTool(name, arguments_);
     else throw new Error(`Unknown tool: ${name}`);
     return {
       content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
@@ -1619,6 +1759,7 @@ export class NativeAppBackend {
       message: String(text || ""),
       replyTo: replyToMessageId ? Number(replyToMessageId) : undefined,
     });
+    this.telegramBridge.invalidateCache();
     return { ok: true, message: this.telegramBridge._serializeMessage(sent) };
   }
 
@@ -1627,6 +1768,7 @@ export class NativeAppBackend {
     const chat = await this.telegramBridge.getChat(peer, 1);
     if (!chat.chat) throw new Error("Unknown Telegram chat");
     await this.telegramBridge.client.deleteMessages(chat.chat.peer_id, messageIds.map((value) => Number(value)), { revoke: true });
+    this.telegramBridge.invalidateCache();
     return { ok: true, deleted: messageIds.map((value) => Number(value)) };
   }
 
@@ -1635,6 +1777,7 @@ export class NativeAppBackend {
     const chat = await this.telegramBridge.getChat(peer, 1);
     if (!chat.chat) throw new Error("Unknown Telegram chat");
     await this.telegramBridge.client.markAsRead(chat.chat.peer_id, undefined, { maxId: Number(maxId || 0) || undefined });
+    this.telegramBridge.invalidateCache();
     return { ok: true, peer_id: chat.chat.peer_id, max_id: Number(maxId || 0) };
   }
 
@@ -1670,15 +1813,19 @@ export class NativeAppBackend {
         { uri: "imessage://updates", name: "Messages updates", mimeType: "application/json", description: "Recent Messages events across visible chats." },
       );
     }
+    resources.push(...(await this.filesystem.mcpResources()));
     for (const chat of await this.telegramBridge.getOverviewChats().catch(() => [])) {
-      resources.push({ uri: `telegram://chat/${chat.peer_id}`, name: chat.title, mimeType: "application/json", description: `Recent messages for ${chat.title}.` });
+      resources.push({ uri: `telegram://chat/${chat.peer_id}`, name: chat.title, mimeType: "application/json", description: `Recent messages for ${chat.title} (default cap: 50).` });
     }
     for (const chat of (await this.getWhatsAppAuth()).chats || []) {
-      resources.push({ uri: `whatsapp://chat/${encodeURIComponent(chat.jid)}`, name: chat.title, mimeType: "application/json", description: `Recent WhatsApp messages for ${chat.title}.` });
+      resources.push({ uri: `whatsapp://chat/${encodeURIComponent(chat.jid)}`, name: chat.title, mimeType: "application/json", description: `Recent WhatsApp messages for ${chat.title} (default cap: 50).` });
     }
     if (this.config.imessageEnabled) {
-      for (const chat of (await this.getIMessageAuth()).visible_chats || []) {
-        resources.push({ uri: `imessage://chat/${encodeURIComponent(chat.chat_id)}`, name: chat.title, mimeType: "application/json", description: `Recent Messages content for ${chat.title}.` });
+      const imessageAuth = await this.getIMessageAuth();
+      if (imessageAuth.database_accessible) {
+        for (const chat of imessageAuth.visible_chats || []) {
+          resources.push({ uri: `imessage://chat/${encodeURIComponent(chat.chat_id)}`, name: chat.title, mimeType: "application/json", description: `Recent Messages content for ${chat.title} (default cap: 50).` });
+        }
       }
     }
     return resources;
@@ -1694,12 +1841,16 @@ export class NativeAppBackend {
     else if (uri === "whatsapp://config") payload = await this.getWhatsAppAuth();
     else if (uri === "whatsapp://chats") payload = { ok: true, chats: (await this.getWhatsAppAuth()).chats || [] };
     else if (uri === "whatsapp://updates") payload = await this.whatsapp.getUpdates(50);
-    else if (uri.startsWith("whatsapp://chat/")) payload = await this.getWhatsAppChat(decodeURIComponent(uri.slice("whatsapp://chat/".length)));
+    else if (uri.startsWith("whatsapp://chat/")) payload = await this.getWhatsAppChat(decodeURIComponent(uri.slice("whatsapp://chat/".length)), 50);
     else if (uri === "imessage://config") payload = await this.getIMessageAuth();
     else if (uri === "imessage://chats") payload = { ok: true, chats: (await this.getIMessageAuth()).visible_chats || [] };
     else if (uri === "imessage://updates") payload = await this.imessage.getUpdates(50);
     else if (uri.startsWith("imessage://chat/")) payload = await this.imessage.getChat(decodeURIComponent(uri.slice("imessage://chat/".length)), 50, true);
+    else if (uri.startsWith("filesystem://")) payload = await this.filesystem.mcpReadResource(uri);
     else throw new Error(`Unknown resource: ${uri}`);
+    if (payload && Array.isArray(payload.contents)) {
+      return payload;
+    }
     return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(payload, null, 2) }] };
   }
 }

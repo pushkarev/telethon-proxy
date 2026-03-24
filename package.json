@@ -1,7 +1,7 @@
 {
   "name": "aardvark-desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Aardvark desktop app for the local Telegram, WhatsApp, and Messages MCP bridge.",
   "author": "PushPlayLabs Inc",
   "type": "module",
@@ -12,8 +12,8 @@
     "app:pack": "electron-builder --dir",
     "app:dist": "electron-builder",
     "app:smoke": "node scripts/electron-smoke.mjs",
-    "check": "node --check electron/main.mjs && node --check electron/native-backend.mjs && node --check electron/gramjs-background.mjs && node --check whatsapp-project/service.mjs && node --check telegram-project/webui/app.js",
-    "test": "node --test electron/gramjs-background.test.mjs whatsapp-project/service.test.mjs",
+    "check": "node --check electron/main.mjs && node --check electron/native-backend.mjs && node --check electron/preview-cache.mjs && node --check electron/filesystem-bridge.mjs && node --check electron/gramjs-background.mjs && node --check whatsapp-project/service.mjs && node --check telegram-project/webui/app.js",
+    "test": "node --test electron/native-backend.test.mjs electron/preview-cache.test.mjs electron/filesystem-bridge.test.mjs electron/gramjs-background.test.mjs whatsapp-project/service.test.mjs",
     "browser:run": "node scripts/playwright-runner.mjs",
     "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
   },

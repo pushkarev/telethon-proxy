@@ -70,6 +70,14 @@ Run the focused Node tests:
 node --test electron/gramjs-background.test.mjs whatsapp-project/service.test.mjs
 ```
 
+## Release
+
+For signed and notarized macOS build instructions, see:
+
+```text
+RELEASE.md
+```
+
 ## Notes
 
 - Config defaults live under `~/.tlt-proxy/`

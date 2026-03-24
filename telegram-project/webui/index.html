@@ -12,16 +12,47 @@
     <div class="hero">
       <div class="panel hero-main hero-compact">
         <div class="hero-head">
-          <div>
-            <h1>Aardvark</h1>
-            <div class="sub">Telegram, WhatsApp, local Messages, and MCP in one compact local console.</div>
+          <div class="hero-brand">
+            <img class="hero-brand-icon" src="../../electron/assets/aardvark-icon.png" alt="Aardvark app icon" />
+            <div class="hero-copy">
+              <div>
+                <h1>Aardvark</h1>
+                <div class="sub">Telegram, WhatsApp, local Messages, and MCP in one compact local console.</div>
+              </div>
+              <div class="hero-ribbon">
+                <span class="hero-pill" id="heroScopePill">Cloud scope</span>
+                <span class="hero-pill" id="heroTelegramPill">Telegram</span>
+                <span class="hero-pill" id="heroWhatsAppPill">WhatsApp</span>
+                <span class="hero-pill" id="heroIMessagePill">Messages</span>
+              </div>
+            </div>
           </div>
-          <div class="hero-ribbon">
-            <span class="hero-pill" id="heroScopePill">Cloud scope</span>
-            <span class="hero-pill" id="heroTelegramPill">Telegram</span>
-            <span class="hero-pill" id="heroWhatsAppPill">WhatsApp</span>
-            <span class="hero-pill" id="heroIMessagePill">Messages</span>
-          </div>
+          <aside class="hero-side-panel" aria-label="Desktop runtime controls">
+            <div class="section-kicker">Desktop runtime</div>
+            <div class="hero-side-head">
+              <img class="hero-side-icon" src="../../electron/assets/aardvark-tray.png" alt="Aardvark tray icon" />
+              <div>
+                <div class="title">Tray daemon</div>
+                <div class="meta" id="trayBehaviorNote">Closing the window keeps Aardvark running in the tray.</div>
+              </div>
+            </div>
+            <div class="hero-side-pills">
+              <span class="hero-pill" id="trayBehaviorPill">Tray active</span>
+              <span class="hero-pill" id="launchOnStartPill">Launch on start off</span>
+            </div>
+            <label class="toggle-row hero-toggle" for="launchOnStartToggle">
+              <input type="checkbox" id="launchOnStartToggle" />
+              <span class="toggle-box" aria-hidden="true"></span>
+              <span>
+                <strong>Launch on start</strong><br />
+                Open Aardvark automatically after you sign in so the tray daemon is ready.
+              </span>
+            </label>
+            <div class="hero-side-actions">
+              <button type="button" class="secondary-button compact-button" id="hideToTrayButton">Hide to tray</button>
+              <div class="meta" id="launchOnStartStatus">Aardvark stays manual until you turn this on.</div>
+            </div>
+          </aside>
         </div>
         <div class="hero-stats">
           <div class="stat-tile">
@@ -61,6 +92,12 @@
             <span class="connection-check" id="imessageConnectionCheck" hidden aria-hidden="true">✓</span>
           </div>
           <div class="folder-meta">Local Messages chats, AppleScript send access, and optional history from chat.db.</div>
+        </button>
+        <button class="folder-button" data-section="filesystem">
+          <div class="folder-label-row">
+            <div class="folder-name" id="filesystemFolderName">Filesystem</div>
+          </div>
+          <div class="folder-meta">Read-only MCP file access limited to exactly the local directories you select here.</div>
         </button>
         <button class="folder-button" data-section="mcp">
           <div class="folder-name">MCP</div>
@@ -179,7 +216,7 @@
                       <div class="title">Enter 2FA password</div>
                       <span class="pill">Step 3</span>
                     </div>
-                    <div class="meta">This is your Telegram two-step verification password, not the numeric login code.</div>
+                    <div class="meta" id="telegramPasswordMeta">This is your Telegram two-step verification password, not the numeric login code.</div>
                     <label class="field">
                       <span>2FA password</span>
                       <input id="telegramPassword" name="password" type="password" autocomplete="current-password" />
@@ -386,11 +423,65 @@
           </div>
         </section>
 
+        <section class="panel section-panel" data-section-panel="filesystem">
+          <div class="section-head">
+            <div>
+              <h2>Filesystem</h2>
+              <div class="section-copy">Expose selected local directories read-only through MCP, with explicit directory selection and traversal-safe path checks.</div>
+            </div>
+            <span class="badge" id="filesystemBadge">Read-only</span>
+          </div>
+          <div class="section-body">
+            <div class="telegram-shell">
+              <div class="telegram-nav">
+                <button class="filesystem-pane-button active" data-filesystem-pane="directories" id="filesystemDirectoriesTab">Directories</button>
+                <button class="filesystem-pane-button" data-filesystem-pane="accessible" id="filesystemAccessibleTab">Accessible</button>
+              </div>
+
+              <section class="filesystem-pane active" data-filesystem-pane-panel="directories">
+                <div class="settings-grid filesystem-grid">
+                  <div class="credential-card auth-guide">
+                    <div class="row">
+                      <div class="title">Read-only directories</div>
+                      <span class="pill">Secure scope</span>
+                    </div>
+                    <div class="meta">
+                      Choose exactly which directories should be visible through MCP. Filesystem access is read-only only: no file creation, edits, renames, or deletes are exposed. Every file request is restricted to the selected directories after path normalization and real-path checks.
+                    </div>
+                  </div>
+
+                  <div class="credential-card filesystem-card">
+                    <div class="row">
+                      <div class="title">Shared directories</div>
+                      <button type="button" class="primary-button compact-button" id="filesystemAddDirectoryButton">Add directory</button>
+                    </div>
+                    <div class="meta">Use the checkbox to control which directories are currently shared through MCP.</div>
+                    <div class="chat-list" id="filesystemDirectoryList"></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="filesystem-pane" data-filesystem-pane-panel="accessible">
+                <div class="credential-card auth-guide chat-hint">
+                  <div class="row">
+                    <div class="title">Accessible through MCP</div>
+                    <span class="pill">Read-only only</span>
+                  </div>
+                  <div class="meta">
+                    Only the enabled directories shown here are reachable through MCP. Attempts to escape with paths like <span class="mono">../../..</span> or symlinks outside these shared directories are blocked.
+                  </div>
+                </div>
+                <div class="chat-list" id="filesystemAccessibleList"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <section class="panel section-panel" data-section-panel="mcp">
           <div class="section-head">
             <div>
               <h2>MCP</h2>
-              <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram, WhatsApp, and Messages resources available through it.</div>
+              <div class="section-copy">Local Model Context Protocol endpoint, hidden bearer-token management, and the Telegram, WhatsApp, Messages, and Filesystem resources available through it.</div>
             </div>
             <span class="badge">Local tools + subscriptions</span>
           </div>

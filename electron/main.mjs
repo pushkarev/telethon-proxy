@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, clipboard } from "electron";
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, clipboard, dialog } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,14 +110,65 @@ function hideMainWindow() {
 
 
 function createTrayImage() {
+  const trayImage = nativeImage.createFromPath(APP_TRAY_ICON_PATH);
+  const fallbackImage = nativeImage.createFromPath(APP_ICON_PATH);
+  const image = trayImage.isEmpty() ? fallbackImage : trayImage;
   if (process.platform === "darwin") {
-    const image = nativeImage.createFromPath(APP_TRAY_ICON_PATH);
     const resized = image.resize({ width: 18, height: 18 });
     resized.setTemplateImage(true);
     return resized;
   }
-  const image = nativeImage.createFromPath(APP_ICON_PATH);
   return image.resize({ width: 18, height: 18 });
+}
+
+function getLaunchOnStartState() {
+  const supported = process.platform === "darwin" || process.platform === "win32";
+  if (!supported) {
+    return { supported: false, enabled: false };
+  }
+  try {
+    const settings = app.getLoginItemSettings();
+    return {
+      supported: true,
+      enabled: Boolean(settings.openAtLogin),
+    };
+  } catch {
+    return {
+      supported: true,
+      enabled: false,
+    };
+  }
+}
+
+function setLaunchOnStart(enabled) {
+  const desired = Boolean(enabled);
+  const current = getLaunchOnStartState();
+  if (!current.supported) {
+    return current;
+  }
+  if (process.platform === "darwin") {
+    app.setLoginItemSettings({
+      openAtLogin: desired,
+      openAsHidden: desired,
+    });
+    return getLaunchOnStartState();
+  }
+  app.setLoginItemSettings({
+    openAtLogin: desired,
+  });
+  return getLaunchOnStartState();
+}
+
+function getRuntimeInfo() {
+  return {
+    apiBase: INTERNAL_API_BASE,
+    appName: APP_NAME,
+    backgroundOwner: currentBackgroundOwner(),
+    platform: process.platform,
+    trayEnabled: !SMOKE_MODE,
+    closeBehavior: "hide-to-tray",
+    launchOnStart: getLaunchOnStartState(),
+  };
 }
 
 
@@ -128,6 +179,11 @@ function updateTrayMenu() {
   const visible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      {
+        label: `${APP_NAME} keeps running in the tray when you close the window.`,
+        enabled: false,
+      },
+      { type: "separator" },
       {
         label: visible ? `Hide ${APP_NAME}` : `Open ${APP_NAME}`,
         click: async () => {
@@ -204,6 +260,17 @@ async function revealLocalPath(targetPath) {
   return { ok: true, revealed: true, path: resolved };
 }
 
+async function pickDirectory() {
+  const focusedWindow = BrowserWindow.getFocusedWindow() || mainWindow || null;
+  const result = await dialog.showOpenDialog(focusedWindow, {
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || !result.filePaths?.length) {
+    return { ok: true, canceled: true, path: null };
+  }
+  return { ok: true, canceled: false, path: result.filePaths[0] };
+}
+
 
 app.on("before-quit", () => {
   isQuitting = true;
@@ -211,17 +278,22 @@ app.on("before-quit", () => {
 });
 
 ipcMain.handle("proxy:api-base", () => INTERNAL_API_BASE);
-ipcMain.handle("proxy:get-runtime", () => ({
-  apiBase: INTERNAL_API_BASE,
-  backgroundOwner: currentBackgroundOwner(),
-  platform: process.platform,
-}));
+ipcMain.handle("proxy:get-runtime", () => getRuntimeInfo());
 ipcMain.handle("proxy:copy-text", (_event, value) => {
   clipboard.writeText(String(value || ""));
   return { ok: true };
 });
 ipcMain.handle("proxy:open-system-settings", async (_event, kind) => openSystemSettingsPane(String(kind || "files")));
 ipcMain.handle("proxy:show-item-in-folder", async (_event, targetPath) => revealLocalPath(String(targetPath || "")));
+ipcMain.handle("proxy:pick-directory", async () => pickDirectory());
+ipcMain.handle("proxy:set-launch-on-start", (_event, enabled) => ({
+  ok: true,
+  launchOnStart: setLaunchOnStart(Boolean(enabled)),
+}));
+ipcMain.handle("proxy:hide-window", () => {
+  hideMainWindow();
+  return { ok: true };
+});
 
 function formatApiError(routePath, status, payload = {}) {
   if (status === 404 && String(routePath).startsWith("/api/telegram/auth")) {
@@ -232,6 +304,9 @@ function formatApiError(routePath, status, payload = {}) {
   }
   if (status === 404 && String(routePath).startsWith("/api/imessage/auth")) {
     return "Messages support needs the internal app worker. Restart the app and try again.";
+  }
+  if (status === 404 && String(routePath).startsWith("/api/filesystem/")) {
+    return "Filesystem support needs the internal app worker. Restart the app and try again.";
   }
   return payload?.error || `Request failed with status ${status}`;
 }
@@ -250,6 +325,7 @@ const GET_ROUTE_HANDLERS = new Map([
   ["/api/whatsapp/chat", (url) => backend.getWhatsAppChat(url.searchParams.get("jid") || "")],
   ["/api/imessage/auth", () => backend.getIMessageAuth()],
   ["/api/imessage/chat", (url) => backend.getIMessageChat(url.searchParams.get("chat_id") || "")],
+  ["/api/filesystem/status", () => backend.getFilesystemStatus()],
   ["/api/mcp/token", () => backend.getMcpToken()],
 ]);
 
@@ -264,10 +340,13 @@ const POST_ROUTE_HANDLERS = new Map([
   ["/api/telegram/auth/submit-password", (payload) => backend.telegramAuth.submitPassword({ password: payload.password })],
   ["/api/telegram/auth/clear", () => backend.telegramAuth.clearSavedAuth()],
   ["/api/telegram/auth/clear-session", () => backend.telegramAuth.clearSavedSession()],
-  ["/api/whatsapp/auth/request-pairing-code", () => backend.whatsapp.authStatus()],
+  ["/api/whatsapp/auth/request-pairing-code", () => backend.whatsapp.requestPairingCode()],
   ["/api/whatsapp/auth/logout", () => backend.whatsapp.logout()],
   ["/api/imessage/visible-chats", (payload) => backend.setIMessageVisibility({ chatId: payload.chat_id, visible: payload.visible })],
   ["/api/imessage/enabled", (payload) => backend.setIMessageEnabled(Boolean(payload.enabled))],
+  ["/api/filesystem/directories", (payload) => backend.addFilesystemDirectory(String(payload.path || ""))],
+  ["/api/filesystem/directories/toggle", (payload) => backend.setFilesystemDirectoryEnabled(String(payload.path || ""), Boolean(payload.enabled))],
+  ["/api/filesystem/directories/remove", (payload) => backend.removeFilesystemDirectory(String(payload.path || ""))],
   ["/api/mcp/token/rotate", () => backend.rotateMcpToken()],
   ["/api/mcp/config", (payload) => backend.setMcpConfig({ host: payload.host, port: payload.port, scheme: payload.scheme })],
 ]);

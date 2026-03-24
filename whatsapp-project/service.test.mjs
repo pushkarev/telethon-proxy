@@ -205,6 +205,25 @@ test("bridge returns history for canonical chats when messages were stored under
   assert.equal(messages[0].text, "hello from lid");
 });
 
+test("bridge normalizes unsupported WhatsApp messages with stable placeholder text", () => {
+  const service = new WhatsAppBridgeService();
+  const serialized = service._serializeMessage({
+    key: {
+      remoteJid: "628213441512@s.whatsapp.net",
+      id: "wamid-unsupported",
+      fromMe: false,
+    },
+    message: {
+      protocolMessage: { type: 0 },
+    },
+    messageTimestamp: 1_774_265_200,
+  });
+
+  assert.equal(serialized.kind, "protocolMessage");
+  assert.equal(serialized.message_type, "protocolMessage");
+  assert.equal(serialized.text, "[Unsupported WhatsApp message: protocolMessage]");
+});
+
 test("bridge seeds recent history from chat lastMessages payloads", () => {
   const service = new WhatsAppBridgeService();
   service.labelStateValidated = true;
@@ -367,6 +386,83 @@ test("bridge fetches WhatsApp history on demand when an anchor is available", as
   const messages = await service.ensureChatHistory("139672638480573@lid", 50);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].text, "loaded on click");
+});
+
+test("bridge exposes recent WhatsApp updates with a working limit", async () => {
+  const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.chatLabels.set("628213441512@s.whatsapp.net", new Set(["cloud-id"]));
+  service.recentUpdates = [
+    { chat_id: "628213441512@s.whatsapp.net", message_id: "1" },
+    { chat_id: "628213441512@s.whatsapp.net", message_id: "2" },
+    { chat_id: "628213441512@s.whatsapp.net", message_id: "3" },
+  ];
+
+  const updates = await service.getUpdates(2);
+  assert.equal(updates.ok, true);
+  assert.deepEqual(updates.updates.map((item) => item.message_id), ["2", "3"]);
+});
+
+test("bridge waits briefly for the first WhatsApp QR on a fresh session", async () => {
+  const service = new WhatsAppBridgeService();
+  service._connect = async () => {
+    service.sock = {};
+    service.connection = "connecting";
+    service.connected = false;
+    service.registered = false;
+    service.lastError = null;
+    service.qrRaw = null;
+    service.qrSvg = null;
+    setTimeout(() => {
+      service.qrRaw = "fresh-qr";
+      service.qrSvg = "<svg>fresh-qr</svg>";
+      service.qrDataUrl = "data:image/png;base64,fresh";
+      service._notifyStatusWaiters();
+    }, 10);
+  };
+
+  const status = await service.authStatus({ waitForQr: true, timeoutMs: 100 });
+  assert.equal(status.qr_available, true);
+  assert.equal(status.qr_raw, "fresh-qr");
+  assert.equal(status.qr_svg, "<svg>fresh-qr</svg>");
+  assert.equal(status.qr_png_data_url, "data:image/png;base64,fresh");
+});
+
+test("bridge retries QR generation when the first pairing attempt fails or stays blank", async () => {
+  const service = new WhatsAppBridgeService();
+  let connectCalls = 0;
+  service._connect = async () => {
+    connectCalls += 1;
+    service.sock = { id: connectCalls };
+    service.connection = "connecting";
+    service.connected = false;
+    service.registered = false;
+    service.lastError = connectCalls === 1 ? "Initial registration attempt failed." : null;
+    service.qrRaw = null;
+    service.qrSvg = null;
+    service.qrDataUrl = null;
+    if (connectCalls === 2) {
+      setTimeout(() => {
+        service.qrRaw = "retried-qr";
+        service.qrSvg = "<svg>retried-qr</svg>";
+        service.qrDataUrl = "data:image/png;base64,retried";
+        service._notifyStatusWaiters();
+      }, 10);
+    }
+  };
+
+  const status = await service.requestPairingCode({ timeoutMs: 25 });
+  assert.equal(connectCalls, 2);
+  assert.equal(status.qr_available, true);
+  assert.equal(status.qr_raw, "retried-qr");
+  assert.equal(status.qr_png_data_url, "data:image/png;base64,retried");
 });
 
 test("bridge reconnect backoff grows and caps", () => {

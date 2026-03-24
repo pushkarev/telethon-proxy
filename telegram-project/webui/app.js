@@ -5,9 +5,11 @@ let activeSection = "telegram";
 let activeTelegramPane = "chats";
 let activeWhatsAppPane = "chats";
 let activeIMessagePane = "all-chats";
+let activeFilesystemPane = "directories";
 let telegramAuthState = null;
 let whatsappAuthState = null;
 let imessageAuthState = null;
+let filesystemState = null;
 let overviewState = {
   chats: [],
   config: {
@@ -17,6 +19,12 @@ let overviewState = {
 let desktopRuntimeState = {
   backgroundOwner: "external",
   platform: "unknown",
+  trayEnabled: false,
+  closeBehavior: "hide-to-tray",
+  launchOnStart: {
+    supported: false,
+    enabled: false,
+  },
 };
 
 const bridge = window.telethonProxy || null;
@@ -31,6 +39,7 @@ const DEFAULT_TELEGRAM_AUTH = {
   saved_phone: null,
   next_step: "credentials",
   pending_phone: null,
+  password_hint: null,
   last_error: null,
 };
 
@@ -42,6 +51,7 @@ const DEFAULT_WHATSAPP_AUTH = {
   qr_raw: null,
   qr_ascii: null,
   qr_svg: null,
+  qr_png_data_url: null,
   cloud_label_name: "Cloud",
   cloud_label_found: false,
   chats: [],
@@ -70,6 +80,15 @@ const DEFAULT_IMESSAGE_AUTH = {
   last_error: null,
 };
 
+const DEFAULT_FILESYSTEM_STATE = {
+  ok: true,
+  available: true,
+  read_only: true,
+  directories: [],
+  accessible_directories: [],
+  last_error: null,
+};
+
 function el(id) { return document.getElementById(id); }
 
 function setText(id, value) {
@@ -95,6 +114,9 @@ function formatApiError(url, status, payload) {
   }
   if (status === 404 && String(url).startsWith("/api/imessage/auth")) {
     return "iMessage support needs the newer background service. Restart the app or local proxy service and try again.";
+  }
+  if (status === 404 && String(url).startsWith("/api/filesystem/")) {
+    return "Filesystem support needs the newer background service. Restart the app or local proxy service and try again.";
   }
   return payload?.error || `Request failed with status ${status}`;
 }
@@ -258,6 +280,16 @@ function setActiveIMessagePane(pane) {
   }
 }
 
+function setActiveFilesystemPane(pane) {
+  activeFilesystemPane = pane;
+  document.querySelectorAll(".filesystem-pane-button").forEach((node) => {
+    node.classList.toggle("active", node.dataset.filesystemPane === pane);
+  });
+  document.querySelectorAll(".filesystem-pane").forEach((node) => {
+    node.classList.toggle("active", node.dataset.filesystemPanePanel === pane);
+  });
+}
+
 function getIMessageAllChats(state = imessageAuthState) {
   if (Array.isArray(state?.all_chats)) {
     return state.all_chats;
@@ -283,6 +315,14 @@ function getIMessageVisibleChatIds(state = imessageAuthState) {
     return state.visible_chat_ids;
   }
   return getIMessageVisibleChats(state).map((chat) => chat.chat_id);
+}
+
+function getFilesystemDirectories(state = filesystemState) {
+  return Array.isArray(state?.directories) ? state.directories : [];
+}
+
+function getAccessibleFilesystemDirectories(state = filesystemState) {
+  return Array.isArray(state?.accessible_directories) ? state.accessible_directories : [];
 }
 
 function bindIMessageEnabledToggle(id, enabled) {
@@ -388,6 +428,7 @@ async function getApiBase() {
 
 async function loadDesktopRuntime() {
   if (!bridge?.runtimeInfo) {
+    renderDesktopRuntime();
     return desktopRuntimeState;
   }
   try {
@@ -398,7 +439,74 @@ async function loadDesktopRuntime() {
   } catch {
     // Leave the default runtime info in place when running outside Electron.
   }
+  renderDesktopRuntime();
   return desktopRuntimeState;
+}
+
+function renderDesktopRuntime() {
+  const launchOnStartState = {
+    supported: false,
+    enabled: false,
+    ...(desktopRuntimeState.launchOnStart || {}),
+  };
+  const launchToggle = el("launchOnStartToggle");
+  const launchToggleRow = launchToggle?.closest(".toggle-row");
+  const hideButton = el("hideToTrayButton");
+
+  setText("trayBehaviorPill", desktopRuntimeState.trayEnabled ? "Tray active" : "Tray unavailable");
+  setText(
+    "trayBehaviorNote",
+    desktopRuntimeState.trayEnabled
+      ? "Closing the window keeps Aardvark running in the tray."
+      : "Tray controls are available when you open the desktop app.",
+  );
+  setText(
+    "launchOnStartPill",
+    launchOnStartState.supported
+      ? (launchOnStartState.enabled ? "Launch on start on" : "Launch on start off")
+      : "Manual launch",
+  );
+  setText(
+    "launchOnStartStatus",
+    !bridge?.setLaunchOnStart
+      ? "Launch on start is available in the desktop app."
+      : (launchOnStartState.supported
+          ? (launchOnStartState.enabled
+              ? "Aardvark will open automatically after you sign in."
+              : "Aardvark stays manual until you turn this on.")
+          : `Launch on start is not supported on ${desktopRuntimeState.platform}.`),
+  );
+
+  if (launchToggle) {
+    launchToggle.checked = Boolean(launchOnStartState.enabled);
+    launchToggle.disabled = !bridge?.setLaunchOnStart || !launchOnStartState.supported;
+    launchToggle.onchange = async () => {
+      launchToggle.disabled = true;
+      try {
+        await setLaunchOnStart(launchToggle.checked);
+      } catch (error) {
+        launchToggle.checked = Boolean(desktopRuntimeState.launchOnStart?.enabled);
+        setNotice(error.message || String(error), "error");
+      } finally {
+        renderDesktopRuntime();
+      }
+    };
+  }
+
+  if (launchToggleRow) {
+    launchToggleRow.classList.toggle("is-disabled", Boolean(launchToggle?.disabled));
+  }
+
+  if (hideButton) {
+    hideButton.disabled = !bridge?.hideWindow || !desktopRuntimeState.trayEnabled;
+    hideButton.onclick = async () => {
+      try {
+        await hideWindowToTray();
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      }
+    };
+  }
 }
 
 async function loadOverview() {
@@ -417,6 +525,10 @@ async function loadOverview() {
       ...DEFAULT_IMESSAGE_AUTH,
       ...(raw.imessage || {}),
     },
+    filesystem: {
+      ...DEFAULT_FILESYSTEM_STATE,
+      ...(raw.filesystem || {}),
+    },
   };
 
   renderOverview(data);
@@ -424,6 +536,7 @@ async function loadOverview() {
   renderTelegramAuth(data.telegram_auth);
   renderWhatsAppAuth(data.whatsapp);
   renderIMessageAuth(data.imessage);
+  renderFilesystemState(data.filesystem);
 
   if (!selectedPeerId && data.chats.length) {
     selectedPeerId = data.chats[0].peer_id;
@@ -481,6 +594,10 @@ function renderOverview(data) {
   const imessageAuth = {
     ...DEFAULT_IMESSAGE_AUTH,
     ...(data.imessage || {}),
+  };
+  const filesystem = {
+    ...DEFAULT_FILESYSTEM_STATE,
+    ...(data.filesystem || {}),
   };
   const mcpTlsConfigured = Boolean(data.mcp.tls_configured);
   setText("dashboardAddress", `${data.config.dashboard_host}:${data.config.dashboard_port}`);
@@ -569,8 +686,9 @@ function renderOverview(data) {
     <div class="meta">
       The bearer token stays hidden in the app. Use copy when you need it, or revoke it to invalidate the current token and copy a fresh one.<br />
       Example endpoint: <span class="mono">${esc(mcpEndpoint)}</span><br />
-      Suggested tools: <span class="mono">telegram.list_chats</span>, <span class="mono">whatsapp.list_chats</span>, <span class="mono">imessage.list_chats</span>, <span class="mono">imessage.get_messages</span>, <span class="mono">imessage.send_message</span><br />
-      Resources: <span class="mono">telegram://config</span>, <span class="mono">whatsapp://config</span>, <span class="mono">imessage://config</span>, <span class="mono">imessage://chat/&lt;chat_id&gt;</span><br />
+      Suggested tools: <span class="mono">telegram.list_chats</span>, <span class="mono">whatsapp.list_chats</span>, <span class="mono">imessage.list_chats</span>, <span class="mono">filesystem.list_directories</span>, <span class="mono">filesystem.read_text_file</span>, <span class="mono">filesystem.preview_file</span>, <span class="mono">filesystem.read_binary_file</span><br />
+      Resources: <span class="mono">telegram://config</span>, <span class="mono">whatsapp://config</span>, <span class="mono">imessage://config</span>, <span class="mono">filesystem://roots</span> (shared directories), <span class="mono">filesystem://directory/&lt;path&gt;</span>, <span class="mono">filesystem://preview/&lt;path&gt;</span> for text files, PDF, Word (.doc/.docx), Excel (.xlsx), and PowerPoint (.pptx) previews, <span class="mono">filesystem://binary/&lt;path&gt;</span> for raw downloads<br />
+      Preview caveat: only those file types are previewable, and preview text can still be incomplete, so MCP clients should fetch the binary file when completeness matters.<br />
       Subscriptions: open SSE with <span class="mono">Mcp-Session-Id</span> and subscribe to <span class="mono">telegram://updates</span> or <span class="mono">telegram://chat/&lt;peer_id&gt;</span>
     </div>
     <div class="auth-actions">
@@ -652,7 +770,7 @@ function renderOverview(data) {
 
   if (data.error) {
     setNotice(data.error, "error");
-  } else if (!telegramAuth.last_error && !whatsappAuth.last_error && !imessageAuth.last_error) {
+  } else if (!telegramAuth.last_error && !whatsappAuth.last_error && !imessageAuth.last_error && !filesystem.last_error) {
     setNotice("");
   }
 }
@@ -800,6 +918,131 @@ function renderIMessageViews() {
     emptyText: "No Messages chats are currently visible through MCP.",
     visibleChatIds,
     compact: true,
+  });
+}
+
+function renderFilesystemState(state) {
+  filesystemState = {
+    ...DEFAULT_FILESYSTEM_STATE,
+    ...(state || {}),
+  };
+  const directories = getFilesystemDirectories(filesystemState);
+  const accessibleDirectories = getAccessibleFilesystemDirectories(filesystemState);
+  setText("filesystemFolderName", `Filesystem (${accessibleDirectories.length})`);
+  setText("filesystemDirectoriesTab", `Directories (${directories.length})`);
+  setText("filesystemAccessibleTab", `Accessible (${accessibleDirectories.length})`);
+  setText("filesystemBadge", accessibleDirectories.length ? "Read-only live" : "Read-only");
+
+  const directoryList = el("filesystemDirectoryList");
+  if (directoryList) {
+    directoryList.innerHTML = directories.length
+      ? directories.map((entry) => `
+          <div class="chat filesystem-entry ${entry.shared ? "active" : ""}">
+            <div class="row filesystem-entry-row">
+              <div class="filesystem-entry-main">
+                <div class="title filesystem-entry-title">${esc(entry.path)}</div>
+                <div class="meta">
+                  ${entry.shared
+                    ? `Shared read-only · ${esc(entry.name)}`
+                    : `${esc(entry.exists ? "Not shared" : "Unavailable")}${entry.error ? ` · ${esc(entry.error)}` : ""}`}
+                </div>
+                ${entry.resolved_path && entry.resolved_path !== entry.path ? `<div class="meta">Resolved to ${esc(entry.resolved_path)}</div>` : ""}
+              </div>
+              <div class="filesystem-entry-actions">
+                <label class="chat-visibility-toggle">
+                  <input
+                    type="checkbox"
+                    data-filesystem-toggle="${esc(entry.path)}"
+                    ${entry.enabled ? "checked" : ""}
+                  />
+                  <span>Shared</span>
+                </label>
+                <button type="button" class="secondary-button compact-button" data-filesystem-reveal="${esc(entry.path)}">Reveal</button>
+                <button type="button" class="danger-button compact-button" data-filesystem-remove="${esc(entry.path)}">Remove</button>
+              </div>
+            </div>
+          </div>
+        `).join("")
+      : '<div class="empty">No directories are configured yet. Add a folder to expose it read-only through MCP.</div>';
+  }
+
+  const accessibleList = el("filesystemAccessibleList");
+  if (accessibleList) {
+    accessibleList.innerHTML = accessibleDirectories.length
+      ? accessibleDirectories.map((entry) => `
+          <div class="chat chat-compact active">
+            <div class="row">
+              <div class="title">${esc(entry.name)}</div>
+              <div class="row chat-title-actions">
+                <span class="meta chat-inline-date">read-only</span>
+                <span class="pill">shared</span>
+              </div>
+            </div>
+            <div class="meta">
+              ${esc(entry.path)}
+              ${entry.resolved_path && entry.resolved_path !== entry.path ? `<br />Resolved to ${esc(entry.resolved_path)}` : ""}
+            </div>
+          </div>
+        `).join("")
+      : '<div class="empty">No directories are currently shared through MCP.</div>';
+  }
+
+  if (filesystemState.last_error) {
+    setNotice(filesystemState.last_error, "error");
+  }
+
+  const addDirectoryButton = el("filesystemAddDirectoryButton");
+  if (addDirectoryButton) {
+    addDirectoryButton.onclick = () => {
+      addFilesystemDirectory().catch((error) => setNotice(error.message || String(error), "error"));
+    };
+  }
+
+  document.querySelectorAll("[data-filesystem-toggle]").forEach((input) => {
+    input.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+    input.addEventListener("change", async (event) => {
+      const target = event.currentTarget;
+      target.disabled = true;
+      try {
+        await setFilesystemDirectoryEnabled(target.dataset.filesystemToggle, target.checked);
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      } finally {
+        target.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-filesystem-remove]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const target = event.currentTarget;
+      target.disabled = true;
+      try {
+        await removeFilesystemDirectory(target.dataset.filesystemRemove);
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      } finally {
+        target.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-filesystem-reveal]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        if (!bridge?.showItemInFolder) {
+          setNotice("Open the desktop app to reveal local folders from here.", "error");
+          return;
+        }
+        await bridge.showItemInFolder(event.currentTarget.dataset.filesystemReveal);
+      } catch (error) {
+        setNotice(error.message || String(error), "error");
+      }
+    });
   });
 }
 
@@ -1052,6 +1295,18 @@ function renderTelegramAuth(state) {
 
   el("telegramCodeForm").classList.toggle("visible", telegramAuthState.next_step === "code");
   el("telegramPasswordForm").classList.toggle("visible", telegramAuthState.next_step === "password");
+  setText(
+    "telegramPasswordMeta",
+    telegramAuthState.password_hint
+      ? `This is your Telegram two-step verification password, not the numeric login code. Hint: ${telegramAuthState.password_hint}`
+      : "This is your Telegram two-step verification password, not the numeric login code.",
+  );
+
+  if (telegramAuthState.next_step === "password") {
+    queueMicrotask(() => {
+      el("telegramPassword")?.focus();
+    });
+  }
 
   const deleteButton = document.getElementById("deleteSavedSessionButton");
   if (deleteButton) {
@@ -1087,7 +1342,17 @@ function renderWhatsAppAuth(state) {
     ${whatsappAuthState.last_error ? `<div class="inline-notice">${esc(whatsappAuthState.last_error)}</div>` : ""}
   `;
 
-  el("whatsappQrCard").innerHTML = whatsappAuthState.qr_svg
+  el("whatsappQrCard").innerHTML = whatsappAuthState.qr_png_data_url
+    ? `
+        <div class="whatsapp-qr">
+          <img src="${esc(whatsappAuthState.qr_png_data_url)}" alt="WhatsApp QR code" class="whatsapp-qr-image" />
+          <div class="whatsapp-qr-meta">
+            Scan this QR from WhatsApp on your phone.<br />
+            If it expires, use <span class="mono">Refresh QR</span>.
+          </div>
+        </div>
+      `
+    : whatsappAuthState.qr_svg
     ? `
         <div class="whatsapp-qr">
           ${whatsappAuthState.qr_svg}
@@ -1269,6 +1534,10 @@ async function refreshIMessageAuth() {
   await syncIMessageSelectionForActivePane();
 }
 
+async function refreshFilesystemStatus() {
+  renderFilesystemState(await getJson("/api/filesystem/status"));
+}
+
 async function saveTelegramCredentials(event) {
   event.preventDefault();
   const result = await saveTelegramCredentialsFromForm();
@@ -1307,7 +1576,9 @@ async function submitTelegramCode(event) {
   el("telegramCode").value = "";
   renderTelegramAuth(result);
   if (result.next_step === "password") {
-    setNotice("Telegram asked for the account 2FA password.", "success");
+    setActiveSection("telegram");
+    setActiveTelegramPane("settings");
+    setNotice("Telegram asked for the account 2FA password. Enter it to finish saving the session.", "success");
     return;
   }
   setNotice("Telegram account authorized and saved to the Keychain.", "success");
@@ -1394,10 +1665,73 @@ async function setIMessageEnabled(enabled) {
   await loadOverview();
 }
 
+async function addFilesystemDirectory() {
+  if (!bridge?.pickDirectory) {
+    throw new Error("Directory picking is only available in the desktop app.");
+  }
+  const result = await bridge.pickDirectory();
+  if (result?.canceled || !result?.path) {
+    return;
+  }
+  await postJson("/api/filesystem/directories", { path: result.path });
+  setActiveSection("filesystem");
+  setActiveFilesystemPane("directories");
+  setNotice("Directory added to the filesystem MCP scope.", "success");
+  await loadOverview();
+}
+
+async function setFilesystemDirectoryEnabled(dirPath, enabled) {
+  await postJson("/api/filesystem/directories/toggle", {
+    path: dirPath,
+    enabled,
+  });
+  setNotice(
+    enabled
+      ? "Directory is now shared read-only through MCP."
+      : "Directory was removed from the active MCP filesystem scope.",
+    "success",
+  );
+  await loadOverview();
+}
+
+async function removeFilesystemDirectory(dirPath) {
+  await postJson("/api/filesystem/directories/remove", { path: dirPath });
+  setNotice("Directory was removed from the filesystem MCP list.", "success");
+  await loadOverview();
+}
+
 async function setMcpConfig(host, port, scheme) {
   const result = await postJson("/api/mcp/config", { host, port, scheme });
   setNotice(result.message || "MCP listener updated.", "success");
   await loadOverview();
+}
+
+async function setLaunchOnStart(enabled) {
+  if (!bridge?.setLaunchOnStart) {
+    throw new Error("Launch on start is only available in the desktop app.");
+  }
+  const result = await bridge.setLaunchOnStart(Boolean(enabled));
+  desktopRuntimeState = {
+    ...desktopRuntimeState,
+    launchOnStart: {
+      ...desktopRuntimeState.launchOnStart,
+      ...(result?.launchOnStart || {}),
+    },
+  };
+  setNotice(
+    desktopRuntimeState.launchOnStart?.enabled
+      ? "Aardvark will now launch automatically when you sign in."
+      : "Launch on start was turned off.",
+    "success",
+  );
+}
+
+async function hideWindowToTray() {
+  if (!bridge?.hideWindow) {
+    throw new Error("Hide to tray is only available in the desktop app.");
+  }
+  await bridge.hideWindow();
+  setNotice("Aardvark is still running in the tray.", "success");
 }
 
 document.querySelectorAll(".folder-button").forEach((node) => {
@@ -1416,6 +1750,12 @@ document.querySelectorAll(".imessage-pane-button").forEach((node) => {
   node.addEventListener("click", () => {
     setActiveIMessagePane(node.dataset.imessagePane);
     syncIMessageSelectionForActivePane().catch((error) => setNotice(error.message || String(error), "error"));
+  });
+});
+
+document.querySelectorAll(".filesystem-pane-button").forEach((node) => {
+  node.addEventListener("click", () => {
+    setActiveFilesystemPane(node.dataset.filesystemPane);
   });
 });
 
@@ -1447,6 +1787,7 @@ el("whatsappLogoutButton").addEventListener("click", () => {
   clearWhatsAppSession().catch((error) => setNotice(error.message || String(error), "error"));
 });
 
+renderDesktopRuntime();
 loadDesktopRuntime()
   .then(() => loadOverview())
   .catch((error) => {
@@ -1456,6 +1797,7 @@ loadDesktopRuntime()
 refreshTelegramAuth().catch(() => {});
 refreshWhatsAppAuth().catch(() => {});
 refreshIMessageAuth().catch(() => {});
+refreshFilesystemStatus().catch(() => {});
 setInterval(() => {
   refreshWhatsAppAuth().catch(() => {});
   refreshIMessageAuth().catch(() => {});

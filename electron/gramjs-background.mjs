@@ -107,6 +107,11 @@ export class GramJsTelegramBridge {
     this.cachedIdentity = null;
   }
 
+  invalidateCache() {
+    this.cachedDialogs = [];
+    this.cachedAt = 0;
+  }
+
   async stop() {
     if (!this.client) return;
     try {
@@ -184,8 +189,7 @@ export class GramJsTelegramBridge {
     if (!(await this.client.checkAuthorization())) {
       throw new Error("Telegram authentication is required in Telegram -> Settings");
     }
-    this.cachedAt = 0;
-    this.cachedDialogs = [];
+    this.invalidateCache();
     this.cachedIdentity = null;
   }
 
