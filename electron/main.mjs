@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, shell, clipboard } from "electron";
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, clipboard } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,17 +8,20 @@ import { NativeAppBackend } from "./native-backend.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
-const DASHBOARD_HOST = process.env.TP_DASHBOARD_HOST || "127.0.0.1";
-const DASHBOARD_PORT = Number(process.env.TP_DASHBOARD_PORT || "8788");
 const UI_ENTRY = path.join(ROOT_DIR, "telegram-project", "webui", "index.html");
 const SMOKE_MODE = process.env.TP_SMOKE === "1";
 const INTERNAL_API_BASE = "electron://app";
+const APP_NAME = "Aardvark";
+const APP_ICON_PATH = path.join(ROOT_DIR, "electron", "assets", "aardvark-icon.png");
+const APP_TRAY_ICON_PATH = path.join(ROOT_DIR, "electron", "assets", "aardvark-tray.png");
 
 let mainWindow = null;
 let isQuitting = false;
 let tray = null;
 let backendReadyPromise = null;
 const backend = new NativeAppBackend();
+
+app.setName(APP_NAME);
 
 async function waitForBackendReady() {
   if (!backendReadyPromise) {
@@ -43,7 +46,8 @@ async function createWindow() {
     minHeight: 680,
     autoHideMenuBar: true,
     backgroundColor: "#f6f0e4",
-    title: "Telethon Proxy",
+    title: APP_NAME,
+    icon: APP_ICON_PATH,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -107,18 +111,12 @@ function hideMainWindow() {
 
 function createTrayImage() {
   if (process.platform === "darwin") {
-    return nativeImage.createFromDataURL("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s1vZ1cAAAAASUVORK5CYII=");
+    const image = nativeImage.createFromPath(APP_TRAY_ICON_PATH);
+    const resized = image.resize({ width: 18, height: 18 });
+    resized.setTemplateImage(true);
+    return resized;
   }
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
-      <g fill="none" fill-rule="evenodd">
-        <path d="M5.5 7h11" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
-        <path d="M5.5 11h11" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
-        <path d="M5.5 15h7" stroke="#000000" stroke-width="1.8" stroke-linecap="round"/>
-      </g>
-    </svg>
-  `;
-  const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+  const image = nativeImage.createFromPath(APP_ICON_PATH);
   return image.resize({ width: 18, height: 18 });
 }
 
@@ -131,7 +129,7 @@ function updateTrayMenu() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
-        label: visible ? "Hide Telethon Proxy" : "Open Telethon Proxy",
+        label: visible ? `Hide ${APP_NAME}` : `Open ${APP_NAME}`,
         click: async () => {
           if (!mainWindow || mainWindow.isDestroyed()) {
             await createWindow();
@@ -165,10 +163,7 @@ function createTray() {
     return null;
   }
   tray = new Tray(createTrayImage());
-  tray.setToolTip("Telethon Proxy");
-  if (process.platform === "darwin") {
-    tray.setTitle("TP");
-  }
+  tray.setToolTip(APP_NAME);
   tray.on("click", async () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       await createWindow();
@@ -247,84 +242,60 @@ function apiError(routePath, status, error) {
   return wrapped;
 }
 
-async function backendRequest(method, params = {}, routePath = method) {
+const GET_ROUTE_HANDLERS = new Map([
+  ["/api/overview", () => backend.getOverview()],
+  ["/api/chat", (url) => backend.getTelegramChat(url.searchParams.get("peer_id") || "0", 50)],
+  ["/api/telegram/auth", () => backend.getTelegramAuth()],
+  ["/api/whatsapp/auth", () => backend.getWhatsAppAuth()],
+  ["/api/whatsapp/chat", (url) => backend.getWhatsAppChat(url.searchParams.get("jid") || "")],
+  ["/api/imessage/auth", () => backend.getIMessageAuth()],
+  ["/api/imessage/chat", (url) => backend.getIMessageChat(url.searchParams.get("chat_id") || "")],
+  ["/api/mcp/token", () => backend.getMcpToken()],
+]);
+
+const POST_ROUTE_HANDLERS = new Map([
+  ["/api/telegram/auth/save", (payload) => backend.telegramAuth.saveCredentials({
+    apiId: payload.api_id,
+    apiHash: payload.api_hash,
+    phone: payload.phone,
+  })],
+  ["/api/telegram/auth/request-code", (payload) => backend.telegramAuth.requestCode({ phone: payload.phone })],
+  ["/api/telegram/auth/submit-code", (payload) => backend.telegramAuth.submitCode({ code: payload.code })],
+  ["/api/telegram/auth/submit-password", (payload) => backend.telegramAuth.submitPassword({ password: payload.password })],
+  ["/api/telegram/auth/clear", () => backend.telegramAuth.clearSavedAuth()],
+  ["/api/telegram/auth/clear-session", () => backend.telegramAuth.clearSavedSession()],
+  ["/api/whatsapp/auth/request-pairing-code", () => backend.whatsapp.authStatus()],
+  ["/api/whatsapp/auth/logout", () => backend.whatsapp.logout()],
+  ["/api/imessage/visible-chats", (payload) => backend.setIMessageVisibility({ chatId: payload.chat_id, visible: payload.visible })],
+  ["/api/imessage/enabled", (payload) => backend.setIMessageEnabled(Boolean(payload.enabled))],
+  ["/api/mcp/token/rotate", () => backend.rotateMcpToken()],
+  ["/api/mcp/config", (payload) => backend.setMcpConfig({ host: payload.host, port: payload.port, scheme: payload.scheme })],
+]);
+
+async function handleApiGet(routePath) {
+  const url = new URL(routePath, `${INTERNAL_API_BASE}/`);
+  const handler = GET_ROUTE_HANDLERS.get(url.pathname);
+  if (!handler) {
+    throw apiError(routePath, 404, new Error("Not Found"));
+  }
   await waitForBackendReady();
   try {
-    return await backend[method](...(Array.isArray(params) ? params : [params]));
+    return await handler(url);
   } catch (error) {
     throw apiError(routePath, error?.status || 500, error);
   }
 }
 
-async function getOverviewPayload() {
-  return backend.getOverview();
-}
-
-async function getTelegramChat(peerId) {
-  return backend.getTelegramChat(peerId, 50);
-}
-
-async function handleApiGet(routePath) {
-  const url = new URL(routePath, `${INTERNAL_API_BASE}/`);
-  if (url.pathname === "/api/overview") {
-    return getOverviewPayload();
-  }
-  if (url.pathname === "/api/chat") {
-    return getTelegramChat(url.searchParams.get("peer_id") || "0");
-  }
-  if (url.pathname === "/api/telegram/auth") {
-    return backend.getTelegramAuth();
-  }
-  if (url.pathname === "/api/whatsapp/auth") {
-    return backend.getWhatsAppAuth();
-  }
-  if (url.pathname === "/api/whatsapp/chat") {
-    return backend.getWhatsAppChat(url.searchParams.get("jid") || "");
-  }
-  if (url.pathname === "/api/imessage/auth") {
-    return backend.getIMessageAuth();
-  }
-  if (url.pathname === "/api/imessage/chat") {
-    return backend.getIMessageChat(url.searchParams.get("chat_id") || "");
-  }
-  if (url.pathname === "/api/mcp/token") {
-    return backend.getMcpToken();
-  }
-  throw apiError(routePath, 404, new Error("Not Found"));
-}
-
 async function handleApiPost(routePath, payload = {}) {
-  switch (routePath) {
-    case "/api/telegram/auth/save":
-      return backend.telegramAuth.saveCredentials({
-        apiId: payload.api_id,
-        apiHash: payload.api_hash,
-        phone: payload.phone,
-      });
-    case "/api/telegram/auth/request-code":
-      return backend.telegramAuth.requestCode({ phone: payload.phone });
-    case "/api/telegram/auth/submit-code":
-      return backend.telegramAuth.submitCode({ code: payload.code });
-    case "/api/telegram/auth/submit-password":
-      return backend.telegramAuth.submitPassword({ password: payload.password });
-    case "/api/telegram/auth/clear":
-      return backend.telegramAuth.clearSavedAuth();
-    case "/api/telegram/auth/clear-session":
-      return backend.telegramAuth.clearSavedSession();
-    case "/api/whatsapp/auth/request-pairing-code":
-      return backend.whatsapp.authStatus();
-    case "/api/whatsapp/auth/logout":
-      return backend.whatsapp.logout();
-    case "/api/imessage/visible-chats":
-      return backend.setIMessageVisibility({ chatId: payload.chat_id, visible: payload.visible });
-    case "/api/imessage/enabled":
-      return backend.setIMessageEnabled(Boolean(payload.enabled));
-    case "/api/mcp/token/rotate":
-      return backend.rotateMcpToken();
-    case "/api/mcp/config":
-      return backend.setMcpConfig({ host: payload.host, port: payload.port, scheme: payload.scheme });
-    default:
-      throw apiError(routePath, 404, new Error("Not Found"));
+  const handler = POST_ROUTE_HANDLERS.get(routePath);
+  if (!handler) {
+    throw apiError(routePath, 404, new Error("Not Found"));
+  }
+  await waitForBackendReady();
+  try {
+    return await handler(payload);
+  } catch (error) {
+    throw apiError(routePath, error?.status || 500, error);
   }
 }
 
@@ -334,6 +305,7 @@ ipcMain.handle("proxy:post-json", async (_event, routePath, payload) => handleAp
 app.whenReady().then(async () => {
   if (process.platform === "darwin" && !SMOKE_MODE) {
     app.setActivationPolicy("accessory");
+    app.dock.setIcon(APP_ICON_PATH);
   }
   createTray();
   await waitForBackendReady();

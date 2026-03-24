@@ -8,6 +8,12 @@ let activeIMessagePane = "all-chats";
 let telegramAuthState = null;
 let whatsappAuthState = null;
 let imessageAuthState = null;
+let overviewState = {
+  chats: [],
+  config: {
+    cloud_folder_name: "Cloud",
+  },
+};
 let desktopRuntimeState = {
   backgroundOwner: "external",
   platform: "unknown",
@@ -129,6 +135,17 @@ function esc(value) {
 
 function compactLastSeen(value) {
   return value ? `last ${fmtDate(value)}` : "no recent messages";
+}
+
+function renderGlobalCounts() {
+  const telegramChatCount = Array.isArray(overviewState?.chats) ? overviewState.chats.length : 0;
+  const whatsappChatCount = Array.isArray(whatsappAuthState?.chats) ? whatsappAuthState.chats.length : 0;
+  const imessageChatCount = getIMessageVisibleChats(imessageAuthState || DEFAULT_IMESSAGE_AUTH).length;
+  setText("chatCount", telegramChatCount + whatsappChatCount + imessageChatCount);
+  setText("telegramChatsTab", `Chats (${telegramChatCount})`);
+  setText("telegramFolderName", `Telegram (${telegramChatCount})`);
+  setText("whatsappFolderName", `WhatsApp (${whatsappChatCount})`);
+  setText("imessageFolderName", `Messages (${imessageChatCount})`);
 }
 
 function formatMcpEndpoint(scheme, host, port, path) {
@@ -449,6 +466,10 @@ async function loadOverview() {
 }
 
 function renderOverview(data) {
+  overviewState = {
+    chats: Array.isArray(data?.chats) ? data.chats : [],
+    config: data?.config || overviewState.config,
+  };
   const telegramAuth = {
     ...DEFAULT_TELEGRAM_AUTH,
     ...(data.telegram_auth || {}),
@@ -462,18 +483,10 @@ function renderOverview(data) {
     ...(data.imessage || {}),
   };
   const mcpTlsConfigured = Boolean(data.mcp.tls_configured);
-  const telegramChatCount = Array.isArray(data.chats) ? data.chats.length : 0;
-  const whatsappChatCount = Array.isArray(whatsappAuth.chats) ? whatsappAuth.chats.length : 0;
-  const imessageChatCount = getIMessageVisibleChats(imessageAuth).length;
-
-  setText("chatCount", telegramChatCount + whatsappChatCount + imessageChatCount);
-  setText("telegramChatsTab", `Chats (${telegramChatCount})`);
   setText("dashboardAddress", `${data.config.dashboard_host}:${data.config.dashboard_port}`);
   setText("folderBadge", data.config.cloud_folder_name);
   setText("heroScopePill", `${data.config.cloud_folder_name} scope`);
-  setText("telegramFolderName", `Telegram (${telegramChatCount})`);
-  setText("whatsappFolderName", `WhatsApp (${whatsappChatCount})`);
-  setText("imessageFolderName", `Messages (${imessageChatCount})`);
+  renderGlobalCounts();
   setText("heroTelegramPill", telegramAuth.has_session ? "Telegram ready" : "Telegram login needed");
   setText(
     "heroWhatsAppPill",
@@ -1053,6 +1066,7 @@ function renderWhatsAppAuth(state) {
     ...DEFAULT_WHATSAPP_AUTH,
     ...(state || {}),
   };
+  renderGlobalCounts();
   syncConnectionChecks({ whatsappAuth: whatsappAuthState });
 
   const chats = Array.isArray(whatsappAuthState.chats) ? whatsappAuthState.chats : [];
@@ -1107,6 +1121,7 @@ function renderIMessageAuth(state) {
     ...DEFAULT_IMESSAGE_AUTH,
     ...(state || {}),
   };
+  renderGlobalCounts();
   syncConnectionChecks({ imessageAuth: imessageAuthState });
 
   const disabledCard = el("imessageDisabledCard");
@@ -1140,7 +1155,7 @@ function renderIMessageAuth(state) {
         <span class="pill">disabled</span>
       </div>
       <div class="meta">
-        Enable Messages when you want Telethon Proxy to read local Messages chats or send through the Messages app. macOS will ask for Messages control access, and chat history may also require Full Disk Access.
+        Enable Messages when you want Aardvark to read local Messages chats or send through the Messages app. macOS will ask for Messages control access, and chat history may also require Full Disk Access.
       </div>
       ${imessageAuthState.messages_app_accessible ? '<div class="meta">Messages automation access is already granted on this Mac.</div>' : ""}
     `;
@@ -1169,7 +1184,7 @@ function renderIMessageAuth(state) {
     <div class="meta">Use <strong>All chats</strong> to choose which local threads should be visible through MCP. Only <strong>Visible chats</strong> are exposed there.</div>
     ${!imessageAuthState.database_accessible ? `
       <div class="inline-notice">
-        Messages history is unavailable because Telethon Proxy cannot read <span class="mono">chat.db</span> yet.
+        Messages history is unavailable because Aardvark cannot read <span class="mono">chat.db</span> yet.
         <a href="#" class="inline-link-action" id="openIMessageFilesAccessLink">Enable Full Disk Access</a>
       </div>
     ` : ""}
@@ -1182,7 +1197,7 @@ function renderIMessageAuth(state) {
     ${imessageAuthState.messages_app_error ? `<div class="inline-notice">${esc(imessageAuthState.messages_app_error)}</div>` : ""}
     ${!imessageAuthState.messages_app_error && imessageAuthState.database_error ? `<div class="inline-notice">${esc(imessageAuthState.database_error)}</div>` : ""}
     ${!imessageAuthState.database_accessible && desktopRuntimeState.backgroundOwner === "external"
-      ? `<div class="inline-notice">This window is attached to an already-running background service. Grant the permission to that service context, or stop it and relaunch the desktop app so Telethon Proxy can own the local Messages reader.</div>`
+      ? `<div class="inline-notice">This window is attached to an already-running background service. Grant the permission to that service context, or stop it and relaunch the desktop app so Aardvark can own the local Messages reader.</div>`
       : ""}
   `;
 

@@ -3,9 +3,6 @@ import { execFileSync } from "node:child_process";
 import { Api, TelegramClient, utils } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 
-
-const DASHBOARD_HOST = process.env.TP_DASHBOARD_HOST || "127.0.0.1";
-const DASHBOARD_PORT = Number(process.env.TP_DASHBOARD_PORT || "8788");
 const KEYCHAIN_SERVICE = "dev.telethon-proxy.telegram";
 const CLOUD_FOLDER_NAME = process.env.TP_CLOUD_FOLDER || "Cloud";
 
@@ -32,16 +29,6 @@ export function serializeDate(value) {
   }
   if (typeof value.toISOString === "function") return value.toISOString();
   return null;
-}
-
-export function applyPublicDashboardConfig(payload) {
-  if (!payload || typeof payload !== "object") return payload;
-  if (!payload.config || typeof payload.config !== "object") {
-    payload.config = {};
-  }
-  payload.config.dashboard_host = DASHBOARD_HOST;
-  payload.config.dashboard_port = DASHBOARD_PORT;
-  return payload;
 }
 
 function toTitleText(title) {

@@ -117,6 +117,16 @@ function displayTitleFromJid(jid) {
   return user || jid || null;
 }
 
+function canonicalPnJid(jid) {
+  const user = jidUser(jid);
+  return user ? `${user}@s.whatsapp.net` : null;
+}
+
+function canonicalLidJid(jid) {
+  const user = jidUser(jid);
+  return user ? `${user}@lid` : null;
+}
+
 export function peerJidsFromLidMappings(mappingEntries, { meId = null, meLid = null } = {}) {
   const mePnUser = jidUser(meId);
   const meLidUser = jidUser(meLid);
@@ -193,6 +203,7 @@ export class WhatsAppBridgeService {
     this.historyAnchors = new Map();
     this.recentUpdates = [];
     this.loadedPersistedLabelState = false;
+    this.labelStateValidated = false;
     this.persistStateTimer = null;
     this.connectWatchdogTimer = null;
     this.reconnectAttempts = 0;
@@ -315,6 +326,7 @@ export class WhatsAppBridgeService {
     if (update.connection === "open") {
       this._clearConnectWatchdog();
       this._resetReconnectState();
+      this.labelStateValidated = false;
       this.me = sock.user
         ? {
             id: sock.user.id || null,
@@ -328,12 +340,10 @@ export class WhatsAppBridgeService {
       this.qrSvg = null;
       this.lastError = null;
       try {
-        // Existing labels and chat-label associations live in app-state patches, so
-        // we need an initial/full sync here rather than an incremental delta sync.
-        await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
-        if (!this.loadedPersistedLabelState && this.labels.size === 0 && this.chatLabels.size === 0) {
-          await this._rebuildLabelStateFromScratch(sock);
-        }
+        // Labels must be validated from the current live session. Persisted state is
+        // useful for recovery, but it cannot define the visible Cloud scope by itself.
+        await this._rebuildLabelStateFromScratch(sock);
+        await this._refreshLidPnMappings({ sock, jids: [...this.chatLabels.keys()] });
         await this._ensureHistoryAnchors({
           sock,
           forceSnapshot: this.historyAnchors.size === 0,
@@ -356,6 +366,7 @@ export class WhatsAppBridgeService {
         this._resetReconnectState();
         this.registered = false;
         this.me = null;
+        this.labelStateValidated = false;
         this.lastError = "WhatsApp session logged out. Scan the next QR code to sign in again.";
         return;
       }
@@ -439,6 +450,9 @@ export class WhatsAppBridgeService {
       if (!jid) {
         continue;
       }
+      const lidJid = firstDefined(contact?.lid, contact?.lidJid);
+      const pnJid = firstDefined(contact?.phoneNumber, contact?.pnJid);
+      this._rememberLidPnMapping(lidJid, pnJid);
       this.contacts.set(jid, {
         id: jid,
         name: firstDefined(contact?.name, contact?.notify, contact?.verifiedName, contact?.pushName),
@@ -596,6 +610,76 @@ export class WhatsAppBridgeService {
       }
     }
     return aliases;
+  }
+
+  _rememberLidPnMapping(lidJid, pnJid) {
+    const lidUser = jidUser(lidJid);
+    const pnUser = jidUser(pnJid);
+    if (!lidUser || !pnUser) {
+      return false;
+    }
+    this.lidToPn.set(String(lidUser), String(pnUser));
+    this.pnToLid.set(String(pnUser), String(lidUser));
+
+    const canonicalLid = canonicalLidJid(lidJid);
+    const canonicalPn = canonicalPnJid(pnJid);
+    if (!canonicalLid || !canonicalPn) {
+      return true;
+    }
+
+    const lidContact = this.contacts.get(canonicalLid) || null;
+    const pnContact = this.contacts.get(canonicalPn) || null;
+    const lidDisplayTitle = displayTitleFromJid(canonicalLid);
+    const preferredLidName = lidContact?.name && lidContact.name !== lidDisplayTitle ? lidContact.name : null;
+    this.contacts.set(canonicalPn, {
+      id: canonicalPn,
+      name: firstDefined(pnContact?.name, preferredLidName, displayTitleFromJid(canonicalPn)),
+    });
+    if (lidContact || pnContact) {
+      this.contacts.set(canonicalLid, {
+        id: canonicalLid,
+        name: firstDefined(lidContact?.name, pnContact?.name),
+      });
+    }
+
+    const lidChat = this.chats.get(canonicalLid) || null;
+    const pnChat = this.chats.get(canonicalPn) || null;
+    const preferredLidChatName = lidChat?.name && lidChat.name !== lidDisplayTitle ? lidChat.name : null;
+    this.chats.set(canonicalPn, {
+      jid: canonicalPn,
+      name: firstDefined(pnChat?.name, this.contacts.get(canonicalPn)?.name, preferredLidChatName, displayTitleFromJid(canonicalPn)),
+      unreadCount: Number.isFinite(pnChat?.unreadCount) ? pnChat.unreadCount : lidChat?.unreadCount || 0,
+      archived: typeof pnChat?.archived === "boolean" ? pnChat.archived : Boolean(lidChat?.archived),
+      lastMessageAt: firstDefined(pnChat?.lastMessageAt, lidChat?.lastMessageAt),
+      lastMessageText: firstDefined(pnChat?.lastMessageText, lidChat?.lastMessageText),
+    });
+    return true;
+  }
+
+  async _refreshLidPnMappings({ sock = this.sock, jids = null } = {}) {
+    const resolver = sock?.signalRepository?.lidMapping;
+    if (!resolver?.getPNForLID) {
+      return;
+    }
+    const candidates = new Set(
+      (jids || [...this.chatLabels.keys(), ...this.chats.keys()])
+        .map((jid) => canonicalLidJid(jid))
+        .filter(Boolean),
+    );
+    let changed = false;
+    for (const lidJid of candidates) {
+      try {
+        const pnJid = await resolver.getPNForLID(lidJid);
+        if (this._rememberLidPnMapping(lidJid, pnJid)) {
+          changed = true;
+        }
+      } catch {
+        // ignore mapping lookup failures
+      }
+    }
+    if (changed) {
+      this._schedulePersistedStateSave();
+    }
   }
 
   _ensureChatRecord(jid) {
@@ -883,6 +967,7 @@ export class WhatsAppBridgeService {
     if (!this._isAllowedChat(jid)) {
       throw new Error(`Blocked access to WhatsApp chat outside ${CLOUD_LABEL_NAME} label`);
     }
+    await this._refreshLidPnMappings({ jids: [jid] });
     const existingMessages = this._mergedChatMessages(jid);
     if (existingMessages.length > 0) {
       return existingMessages.slice(-limit);
@@ -928,6 +1013,7 @@ export class WhatsAppBridgeService {
 
   async _loadPersistedLabelState() {
     this.loadedPersistedLabelState = false;
+    this.labelStateValidated = false;
     try {
       const raw = await fs.readFile(this._labelStatePath(), "utf-8");
       const payload = JSON.parse(raw);
@@ -985,6 +1071,7 @@ export class WhatsAppBridgeService {
     this.labels.clear();
     this.chatLabels.clear();
     await sock.resyncAppState(ALL_WA_PATCH_NAMES, true);
+    this.labelStateValidated = true;
   }
 
   _upsertMessage(message, pushUpdate) {
@@ -1054,6 +1141,9 @@ export class WhatsAppBridgeService {
   }
 
   _cloudLabelRecord() {
+    if (!this.labelStateValidated) {
+      return null;
+    }
     const wanted = CLOUD_LABEL_NAME.toLowerCase();
     for (const label of this.labels.values()) {
       if (!label.deleted && String(label.name || "").trim().toLowerCase() === wanted) {
@@ -1122,6 +1212,9 @@ export class WhatsAppBridgeService {
   }
 
   _isAllowedChat(jid) {
+    if (!this.labelStateValidated) {
+      return false;
+    }
     const label = this._cloudLabelRecord();
     if (!label) {
       return false;
@@ -1138,14 +1231,40 @@ export class WhatsAppBridgeService {
     return firstDefined(chat?.name, this.contacts.get(jid)?.name, displayTitleFromJid(jid), jid);
   }
 
+  _mergedChatState(jid, baseChat = null) {
+    const merged = baseChat ? { ...baseChat } : { jid };
+    let latestTimestamp = Date.parse(merged.lastMessageAt || 0);
+    for (const candidateJid of this._chatAliasJids(jid)) {
+      const candidate = this.chats.get(candidateJid);
+      if (!candidate) {
+        continue;
+      }
+      const candidateTimestamp = Date.parse(candidate.lastMessageAt || 0);
+      if (candidateTimestamp > latestTimestamp) {
+        merged.lastMessageAt = candidate.lastMessageAt || merged.lastMessageAt || null;
+        merged.lastMessageText = candidate.lastMessageText || merged.lastMessageText || null;
+        latestTimestamp = candidateTimestamp;
+      } else if (!merged.lastMessageText && candidate.lastMessageText) {
+        merged.lastMessageText = candidate.lastMessageText;
+      }
+      if (!Number.isFinite(merged.unreadCount) && Number.isFinite(candidate.unreadCount)) {
+        merged.unreadCount = candidate.unreadCount;
+      }
+      if (typeof merged.archived !== "boolean" && typeof candidate.archived === "boolean") {
+        merged.archived = candidate.archived;
+      }
+      if (!merged.name) {
+        merged.name = candidate.name || null;
+      }
+    }
+    return merged;
+  }
+
   _canonicalAllowedChatJid(jid) {
     if (String(jid).endsWith("@lid")) {
       const pnUser = this.lidToPn.get(jidUser(jid));
       if (pnUser) {
-        const pnJid = `${pnUser}@s.whatsapp.net`;
-        if (this.chats.has(pnJid)) {
-          return pnJid;
-        }
+        return `${pnUser}@s.whatsapp.net`;
       }
     }
     return jid;
@@ -1182,7 +1301,7 @@ export class WhatsAppBridgeService {
       }
       const canonicalJid = this._canonicalAllowedChatJid(jid);
       if (!unique.has(canonicalJid)) {
-        unique.set(canonicalJid, this._serializeChat(canonicalJid, this.chats.get(canonicalJid) || chat));
+        unique.set(canonicalJid, this._serializeChat(canonicalJid, this._mergedChatState(canonicalJid, this.chats.get(canonicalJid) || chat)));
       }
     }
     const chats = [...unique.values()]
@@ -1285,6 +1404,7 @@ export class WhatsAppBridgeService {
     this.qrAscii = null;
     this.qrSvg = null;
     this.lastError = null;
+    this.labelStateValidated = false;
     this.contacts.clear();
     this.chats.clear();
     this.messages.clear();

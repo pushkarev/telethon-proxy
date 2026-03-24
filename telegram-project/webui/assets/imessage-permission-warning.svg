@@ -20,7 +20,7 @@
     <path d="M124 142c-6 0-10-5-10-11s4-11 10-11 10 5 10 11-4 11-10 11Zm-10 6h20c3 0 5 2 5 5v10h-30v-10c0-3 2-5 5-5Z" fill="#fff"/>
   </g>
   <text x="38" y="238" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="28" font-weight="700" fill="#F3F5F6">
-    <tspan x="38" dy="0">“Telethon Proxy” wants access</tspan>
+    <tspan x="38" dy="0">“Aardvark” wants access</tspan>
     <tspan x="38" dy="34">to control “Messages”. Allowing</tspan>
     <tspan x="38" dy="34">control will provide access to</tspan>
     <tspan x="38" dy="34">documents and data in</tspan>

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { Api } from "telegram";
-import { applyPublicDashboardConfig, dialogMatchesFilter, serializeDate } from "./gramjs-background.mjs";
+import { dialogMatchesFilter, serializeDate } from "./gramjs-background.mjs";
 
 
 function makeDialog({
@@ -65,15 +65,4 @@ test("dialogMatchesFilter respects group filters", () => {
 
 test("serializeDate converts unix seconds from GramJS", () => {
   assert.equal(serializeDate(1774266607), "2026-03-23T11:50:07.000Z");
-});
-
-test("applyPublicDashboardConfig overwrites internal dashboard listener details", () => {
-  const payload = applyPublicDashboardConfig({
-    config: {
-      dashboard_host: "127.0.0.1",
-      dashboard_port: 8789,
-    },
-  });
-  assert.equal(payload.config.dashboard_host, "127.0.0.1");
-  assert.equal(payload.config.dashboard_port, 8788);
 });

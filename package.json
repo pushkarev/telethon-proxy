@@ -1,16 +1,19 @@
 {
-  "name": "telethon-proxy-desktop",
+  "name": "aardvark-desktop",
   "private": true,
   "version": "0.1.1",
-  "description": "Desktop app for the local Telegram, WhatsApp, and Messages MCP bridge.",
+  "description": "Aardvark desktop app for the local Telegram, WhatsApp, and Messages MCP bridge.",
+  "author": "PushPlayLabs Inc",
   "type": "module",
   "main": "electron/main.mjs",
-  "productName": "Telethon Proxy",
+  "productName": "Aardvark",
   "scripts": {
     "app:dev": "electron .",
     "app:pack": "electron-builder --dir",
     "app:dist": "electron-builder",
     "app:smoke": "node scripts/electron-smoke.mjs",
+    "check": "node --check electron/main.mjs && node --check electron/native-backend.mjs && node --check electron/gramjs-background.mjs && node --check whatsapp-project/service.mjs && node --check telegram-project/webui/app.js",
+    "test": "node --test electron/gramjs-background.test.mjs whatsapp-project/service.test.mjs",
     "browser:run": "node scripts/playwright-runner.mjs",
     "browser:shot": "node scripts/playwright-runner.mjs --screenshot"
   },
@@ -20,7 +23,7 @@
   },
   "build": {
     "appId": "dev.telethon.proxy",
-    "productName": "Telethon Proxy",
+    "productName": "Aardvark",
     "afterSign": "electron/notarize.mjs",
     "files": [
       "electron/**/*",
@@ -32,6 +35,7 @@
       "output": "dist/electron"
     },
     "mac": {
+      "icon": "electron/assets/aardvark.icns",
       "identity": "Developer ID Application",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,

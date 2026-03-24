@@ -60,6 +60,10 @@ test("bridge persists and reloads label state across restarts", async () => {
     await reader._loadPersistedLabelState();
 
     assert.equal(reader.loadedPersistedLabelState, true);
+    assert.equal(reader.labelStateValidated, false);
+    assert.equal(reader._cloudLabelRecord(), null);
+    assert.equal(reader._isAllowedChat("120363143109861283@g.us"), false);
+    reader.labelStateValidated = true;
     assert.equal(reader._cloudLabelRecord()?.id, "cloud-id");
     assert.equal(reader._isAllowedChat("120363143109861283@g.us"), true);
   } finally {
@@ -99,6 +103,7 @@ test("bridge forces a full app-state rebuild when no persisted labels exist", as
 
 test("bridge matches Cloud chat labels across lid and phone-number JIDs", () => {
   const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
   service.labels.set("cloud-id", {
     id: "cloud-id",
     name: "Cloud",
@@ -123,8 +128,49 @@ test("bridge matches Cloud chat labels across lid and phone-number JIDs", () => 
   assert.deepEqual(service._allowedChats(10)[0].labels, ["Cloud"]);
 });
 
+test("bridge canonicalizes Cloud lid chats to phone-number JIDs after signal mapping refresh", async () => {
+  const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
+  service.labels.set("cloud-id", {
+    id: "cloud-id",
+    name: "Cloud",
+    color: 0,
+    deleted: false,
+    predefinedId: null,
+  });
+  service.chatLabels.set("139672638480573@lid", new Set(["cloud-id"]));
+  service.chats.set("139672638480573@lid", {
+    jid: "139672638480573@lid",
+    name: "139672638480573",
+    unreadCount: 0,
+    archived: false,
+    lastMessageAt: "2026-03-23T06:53:06.000Z",
+    lastMessageText: "Hi",
+  });
+
+  await service._refreshLidPnMappings({
+    sock: {
+      signalRepository: {
+        lidMapping: {
+          async getPNForLID(lidJid) {
+            return lidJid === "139672638480573@lid" ? "6287777274968:0@s.whatsapp.net" : null;
+          },
+        },
+      },
+    },
+    jids: ["139672638480573@lid"],
+  });
+
+  assert.equal(service.lidToPn.get("139672638480573"), "6287777274968");
+  assert.equal(service.pnToLid.get("6287777274968"), "139672638480573");
+  assert.deepEqual(service._allowedChats(10).map((chat) => chat.jid), ["6287777274968@s.whatsapp.net"]);
+  assert.equal(service._allowedChats(10)[0].title, "6287777274968");
+  assert.equal(service._allowedChats(10)[0].last_message_text, "Hi");
+});
+
 test("bridge returns history for canonical chats when messages were stored under alias JIDs", () => {
   const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
   service.labels.set("cloud-id", {
     id: "cloud-id",
     name: "Cloud",
@@ -161,6 +207,7 @@ test("bridge returns history for canonical chats when messages were stored under
 
 test("bridge seeds recent history from chat lastMessages payloads", () => {
   const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
   service.labels.set("cloud-id", {
     id: "cloud-id",
     name: "Cloud",
@@ -200,6 +247,7 @@ test("bridge seeds recent history from chat lastMessages payloads", () => {
 
 test("bridge records history anchors and seeds snapshot message ranges", () => {
   const service = new WhatsAppBridgeService();
+  service.labelStateValidated = true;
   service.labels.set("cloud-id", {
     id: "cloud-id",
     name: "Cloud",
@@ -280,6 +328,7 @@ test("bridge persists chats and messages across restarts", async () => {
 test("bridge fetches WhatsApp history on demand when an anchor is available", async () => {
   const service = new WhatsAppBridgeService();
   service.connected = true;
+  service.labelStateValidated = true;
   service.labels.set("cloud-id", {
     id: "cloud-id",
     name: "Cloud",
